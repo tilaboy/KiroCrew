@@ -59,6 +59,8 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 from . import shell_normalizer as _shell_normalizer
+from . import shell_normalizer_programs as _programs
+from . import shell_normalizer_self as _self_mod
 from .argv_floor_git_grammar import (
     _GIT_NON_LOCAL_COMMANDS,
     _GIT_SSH_SCHEME_ALIASES,
@@ -119,7 +121,6 @@ from .argv_floor_tar import (
 from .shell_normalizer import (
     _decode_shell_quoted_literals,
     _ends_argv,
-    _glob_could_expand_to,
     _nested_shell_payloads,
     _push_option_matches,
     _shell_join_continuations,
@@ -1095,8 +1096,9 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
 
     *typed* is True for the outermost read only, whose text is the command as typed.
     """
-    from .argv_rules import _program_index, _split_commands
+    from .argv_rules import _split_commands
     from .shell_commands import _double_quoted_substitution_bodies, read_commands
+    from .shell_normalizer_programs import _program_index
 
     raw = _RAW_COMMAND.get()
     unmasked = _ssh_floor_unmasked_text(text_lower)
@@ -1358,7 +1360,7 @@ def _git_tar_read(text_lower: str, *, typed: bool = False) -> bool:
             if found is None:
                 _observe_words(frame_env, command)
                 continue
-            verb, args = _shell_normalizer._program_basename(command[found]), command[found + 1 :]
+            verb, args = _programs._program_basename(command[found]), command[found + 1 :]
             prefix = command[: len(command) - len(args) - 1]
             _observe_words(frame_env, prefix)
             # Every value kept under a name is carried, inherited ones included:
@@ -1511,17 +1513,17 @@ def _frame_cannot_run_git_tar(source: str) -> bool:
 def _git_tar_verbs(word: str) -> "tuple[bool, bool]":
     """Whether program *word* runs ``git`` and ``tar`` (``gtar`` is GNU tar); a glob
     (``g*t``) is read as every verb it CAN name, as the self floor reads ``pkill``."""
-    verb = _unmasked(_shell_normalizer._program_basename(word)).removesuffix(".exe")
+    verb = _unmasked(_programs._program_basename(word)).removesuffix(".exe")
     return (
-        verb == "git" or _glob_could_expand_to(verb, ("git",)),
-        verb in ("tar", "gtar") or _glob_could_expand_to(verb, ("tar", "gtar")),
+        verb == "git" or _self_mod._glob_could_expand_to(verb, ("git",)),
+        verb in ("tar", "gtar") or _self_mod._glob_could_expand_to(verb, ("tar", "gtar")),
     )
 
 
 def _is_parallel(word: str) -> bool:
     """Whether program *word* runs GNU ``parallel`` (a glob is read as every name it CAN be)."""
-    verb = _unmasked(_shell_normalizer._program_basename(word))
-    return verb == "parallel" or _glob_could_expand_to(verb, ("parallel",))
+    verb = _unmasked(_programs._program_basename(word))
+    return verb == "parallel" or _self_mod._glob_could_expand_to(verb, ("parallel",))
 
 
 def _script_commands(args: "list[str]") -> "list[str]":

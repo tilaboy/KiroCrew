@@ -131,11 +131,16 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for ``mcp-core`` (505 to 506): the App Store search's declaration lives in
 #: its own ``kiro_crew.mcp_tools.catalog.app_store``, which the core listing loads from
 #: ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 for all four servers by the credential-mint floor: the product CLI's
+#: self-invocation recognizer lives in its own ``kiro_crew.security.shell_normalizer_self``,
+#: below both the shell reader and ``argv_floor_self`` and importing neither, so both read
+#: one recognizer; the security package loads before the list, so it cannot move behind it,
+#: and nothing else loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 506,
-    "mcp-cron": 372,
-    "mcp-guide": 366,
-    "mcp-mate": 369,
+    "mcp-core": 507,
+    "mcp-cron": 373,
+    "mcp-guide": 367,
+    "mcp-mate": 370,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
