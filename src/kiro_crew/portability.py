@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, cast
 import kiro_crew._facade_mirror as _facade_mirror
 from kiro_crew import crew_teams, pinned_fs, platform_compat, ui_prefs
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.agent_discovery import clear_list_agents_cache, parsed_agent_specs
+from kiro_crew.agent_discovery import clear_list_agents_cache, note_spec_change, parsed_agent_specs
 from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.archive_config_vetting import config_document_refusal
 from kiro_crew.atomic_write import atomic_write

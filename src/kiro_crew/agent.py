@@ -140,6 +140,7 @@ from kiro_crew.agent_parts.spec_files import (
     _atomic_json_write,
     _atomic_json_write_unguarded,
     _declined_foreign_spec_write,
+    _in_an_agents_dir,
     _notify_if_config_write,
     agents_spec_lock,
     kiro_agents_dir_path,

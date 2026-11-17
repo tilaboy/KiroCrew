@@ -18,6 +18,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.agent_discovery import note_spec_change
 from kiro_crew.agent_sdk.mcp_refs import entry_reaches
 from kiro_crew.mate_worker import (
     ADDITION_KEYS,
@@ -933,6 +934,7 @@ def apply_reporting(member: str, body: Any) -> tuple[dict[str, Any], bool, dict[
         if _digest(new_spec) != _digest(spec):
             atomic_write(path, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True)
             added_servers = {n: new_spec["mcpServers"][n] for n in tkit["added_servers"]}
+            note_spec_change(path)
             base = _worker_base_or_none()
             if base is None:
                 # The preview leaves out a ``permissions`` allow the base already

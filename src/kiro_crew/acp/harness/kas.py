@@ -120,6 +120,7 @@ from kiro_crew.acp.types import (
     PROVIDER_LABEL_KAS,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
+from kiro_crew.agent_discovery import in_agents_dir_revision_scope
 from kiro_crew.agent_files import LITE_AGENT_FILENAME
 from kiro_crew.agent_sdk import kas_machine
 from kiro_crew.config import paths as paths_mod
@@ -383,6 +384,7 @@ def session_projects_folder_hooks(session_key: str) -> bool:
     return not session_key.startswith(CRON_SESSION_KEY_PREFIX) or PERSON_TURN.get()
 
 
+@in_agents_dir_revision_scope
 def resolve_projected_spec(
     agents_dir: Path,
     agent: str,

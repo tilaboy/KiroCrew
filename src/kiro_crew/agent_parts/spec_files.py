@@ -257,6 +257,43 @@ def _atomic_json_write_unguarded(path: Path, data: dict) -> None:
             pass
         raise
     _notify_if_config_write(path)
+    # Every spec writer that reaches this primitive announces its write here, so a
+    # memo or snapshot pinned to the directory is never served across it. Only a
+    # write into an agents directory is a spec write: the primitive also writes
+    # Crew's own JSON state (the connections record), which no walk reads.
+    if _in_an_agents_dir(path):
+        from kiro_crew.agent_discovery import note_spec_change
+
+        note_spec_change(path)
+
+
+def _in_an_agents_dir(path: Path) -> bool:
+    """Whether *path* sits directly in the user-level or crewmate agents dir.
+
+    A project ``<x>/.kiro/agents`` is left out on purpose: the only spec this
+    primitive writes there is a connection-warming generation's private copy
+    (``connections/warm_runtime``), which no Crew walk reads, and announcing it
+    emptied the user-level snapshot a background recycle reads its model pin from.
+    """
+    from kiro_crew.config.paths import mate_agents_dir
+
+    parent = path.parent
+    try:
+        here = parent.resolve()
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop on Python 3.12
+        return True  # the written path is unresolvable: announce; a clear only costs a rescan
+    for accessor in (kiro_agents_dir_path, mate_agents_dir):
+        try:
+            agents = accessor()
+        except (OSError, RuntimeError):
+            return True  # the agents dir is unknowable: announce; a clear only costs a rescan
+        try:
+            if here == agents.resolve():
+                return True
+        except (OSError, RuntimeError):
+            if parent == agents:  # an unresolvable agents dir is compared as spelled
+                return True
+    return False
 
 
 def _notify_if_config_write(path: Path) -> None:
