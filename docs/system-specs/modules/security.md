@@ -1744,7 +1744,13 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   fingerprints, documentation example keys, temp paths); `engine.py` resolves
   overlaps, so a structural Identifier that fully contains a label or pairing Secret
   hit drops it, and a Secret hit wins any other overlap. Every unit has a size bound and fails closed past it, so
-  `stream.py` yields the whole-text result for any split. `compat.py` is the seam
+  `stream.py` yields the whole-text result for any split (a stream's look-behind
+  keeps a running `Cookie:` line's name in front of its latest pairs, so later pairs
+  read from it while decided ones commit; only a pair whose name the reader masks
+  holds its running value), except that such a value held 8 KiB from its pair start
+  has the rest of its line masked, past the value's own end; the same goes for the rest of a
+  running Cookie line whose 4096-character token ceiling fires after its name, and
+  for a Cookie name followed by more than 64 blanks and quotes before its separator. `compat.py` is the seam
   the credential plan reads (`compat.credential_plan`): the detectors read the text,
   each Secret hit's VALUE becomes a span replaced by the credential tag (a base64 or
   hex run whose decoded text holds a credential by `[REDACTED: encoded credential]`),

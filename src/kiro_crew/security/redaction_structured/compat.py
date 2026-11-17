@@ -199,6 +199,7 @@ class _Read:
     base: int
     replace_open_from: int | None = None
     armour_blocks: tuple[tuple[int, int], ...] = ()
+    beyond_line_open: int | None = None
 
 
 def _read(text: str, final: bool = True) -> _Read:
@@ -218,6 +219,7 @@ def _read(text: str, final: bool = True) -> _Read:
         base,
         result.replace_open_from,
         result.armour_blocks,
+        result.beyond_line_open,
     )
 
 
@@ -513,7 +515,7 @@ def stream_read(
     try:
         _load()
         from kiro_crew.security.redaction_structured.model import IDENTIFIER, SECRET
-        from kiro_crew.security.redaction_structured.stream import TAIL
+        from kiro_crew.security.redaction_structured.stream import TAIL, line_drop_ok
 
         with look_behind(context, buf, armour_from):
             read = _read(buf, final=False)
@@ -532,7 +534,11 @@ def stream_read(
     secrets = tuple((h.start - base, h.end - base) for h in resolved if h.tier == SECRET)
     n = base + len(buf)
     tail_hit = next((h for h in resolved if h.tier == SECRET and h.tail and h.end == n), None)
-    if tail_hit is not None and (open_from is None or open_from >= tail_hit.start):
+    if (
+        tail_hit is not None
+        and (open_from is None or open_from >= tail_hit.start)
+        and line_drop_ok(tail_hit, read.beyond_line_open)
+    ):
         return StreamRead(
             tail_hit.start - base,
             tail_hit.tail,
@@ -554,9 +560,13 @@ def stream_read(
             # A cut right at its end, with more text after it, would commit the
             # hit without the character it was decided by (a closing quote).
             first = h.start if h.anchor < 0 else min(h.start, h.anchor)
-            if first < cut < h.end or first < cut == h.end < n:
+            # Retreat only while the cut moves back; a hit decided from emitted
+            # text (anchor below base) holds the buffer whole.
+            if (first < cut < h.end or first < cut == h.end < n) and max(base, first) < cut:
                 cut = max(base, first)
                 moved = undecided = True
+            elif first < cut < h.end:
+                undecided = True
     return StreamRead(cut - base, undecided=undecided, armour_blocks=blocks, secrets=secrets)
 
 
@@ -670,8 +680,23 @@ def discard_run(tail: str, pad: int, buf: str) -> tuple[int, int, bool]:
     return dropped, pad, done
 
 
+def line_drop() -> object:
+    """A fresh shared line drop (:class:`.stream.LineDrop`)."""
+    from kiro_crew.security.redaction_structured.stream import LineDrop
+
+    return LineDrop()
+
+
 def stream_context_max() -> int:
     """How much raw emitted text a stream keeps for :func:`look_behind`."""
     from kiro_crew.security.redaction_structured.stream import CONTEXT
 
     return CONTEXT
+
+
+def stream_look_behind(text: str) -> str:
+    """A stream's look-behind after it lets *text* go (:func:`.headers.cookie_look_behind`)."""
+    from kiro_crew.security.redaction_structured.headers import cookie_look_behind
+    from kiro_crew.security.redaction_structured.stream import CONTEXT
+
+    return cookie_look_behind(text, CONTEXT)

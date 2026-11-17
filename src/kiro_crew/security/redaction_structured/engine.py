@@ -50,6 +50,8 @@ from .model import (
     PLAN_TAGS,
     SECRET,
     TAG,
+    TAIL_ALL,
+    TAIL_LINE,
     Hit,
     Span,
 )
@@ -69,6 +71,11 @@ class ScanResult:
     replace_open_from: int | None = None
     # ``(BEGIN, END line end)`` of each private-key block that ended in the text.
     armour_blocks: tuple[tuple[int, int], ...] = ()
+    # The latest open private-key block, clamped to ``origin``: the only unit that
+    # can decide text past a line drop's CR or LF (``stream.line_drop_ok``).
+    beyond_line_open: int | None = None
+    # Where a private-key block is still open, unclamped (``stream.LineDrop``).
+    cross_line_opens: tuple[int, ...] = ()
 
 
 def scan(
@@ -96,7 +103,11 @@ def scan(
     opens += op
     key_ids = [(h.start, h.end) for h in found if h.rule_id == "aws.access_key_id"]
     armour_hits, armour_opens, blocks = detect_armour(text, table.armour, final, armour_from)
-
+    # The one unit that can run past a line end and decide text a header line drop
+    # would release: a private-key block (``stream.LineDrop`` carries the drop
+    # through its end). A pairing open never holds the drop: dropped text is never
+    # emitted, and a pairing's second half past the line end is scanned as usual.
+    cross_opens = tuple(armour_opens)
     for detected in (
         detect_pairs(text, table.pairs, key_ids, final) if key_ids or not final else _NONE,
         detect_jose(text, table.jose, final),
@@ -123,11 +134,22 @@ def scan(
 
     # An open unit runs to the end of the text, so one that started before
     # ``origin`` (its label already streamed) still holds the text after it.
+    # A line drop decided from a Cookie name in the look-behind starts at the origin:
+    # the text before it has gone, the rest of the line has not.
+    hits = [
+        replace(h, start=origin) if h.tail == TAIL_LINE and h.start < origin < h.end else h
+        for h in hits
+    ]
     live = [max(o, origin) for o in opens]
     replace_from = min(live) if live else None
     live += [max(o, origin) for o in value_opens]
     return ScanResult(
-        _outside_tags(text, hits), min(live) if live else None, replace_from, tuple(blocks)
+        _outside_tags(text, hits),
+        min(live) if live else None,
+        replace_from,
+        tuple(blocks),
+        max(max(o, origin) for o in cross_opens) if cross_opens else None,
+        cross_opens,
     )
 
 
@@ -258,10 +280,12 @@ def _merge(cluster: list[Hit], end: int) -> Hit:
     if len(cluster) == 1:
         return cluster[0]
     # The member covering the most characters names the span; on a tie the more
-    # certain detector, then the lower rule id.
+    # certain detector, then the lower rule id. The tail is the one that drops
+    # furthest: a unit running to the text's end outlasts one ending at its line.
     best = min(cluster, key=lambda h: (-(h.end - h.start), h.rank_key()))
     start = min(h.start for h in cluster)
-    tail = next((h.tail for h in cluster if h.tail and h.end == end), "")
+    tails = [h.tail for h in cluster if h.tail and h.end == end]
+    tail = TAIL_ALL if TAIL_ALL in tails else next(iter(tails), "")
     anchors = [h.anchor for h in cluster if h.anchor >= 0]
     return replace(best, start=start, end=end, tail=tail, anchor=min(anchors, default=-1))
 

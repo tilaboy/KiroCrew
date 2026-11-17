@@ -11,6 +11,8 @@ from array import array
 from collections.abc import Callable
 from typing import Any
 
+from kiro_crew.default_ignorable import DEFAULT_IGNORABLE
+
 from .charsets import ALPHABETS
 
 _BASE62 = ALPHABETS["base62"]
@@ -299,6 +301,9 @@ class _ValueScan:
         # with the cookie session/forgery word positions.
         self._not_in: dict[int, "array[int]"] = {}
         self.lstart: "array[int] | None" = None
+        # The line with default-ignorable characters removed, and the count of kept
+        # characters before each position, built on the first folded name read.
+        self._kept: "tuple[array[int], _ValueScan] | None" = None
         # Positions of the characters the whole-value form branches look inside a value for,
         # so each is answered by bisect instead of a scan that a repeated ``{{``/``<`` value
         # would make quadratic. ``\n``/``\r`` need no list: they are cookie-value stops, so
@@ -419,6 +424,27 @@ class _ValueScan:
         if _any_in(self._forgery_starts, self._forgery_min, a, b):
             return False
         return _any_in(self._session_starts, self._session_min, a, b)
+
+    def folded_session_name_at(self, i: int, eq: int) -> bool:
+        """``session_name(_whole_text_name(text[i:eq]))``: the name with default-ignorable
+        characters removed, then blanks stripped. The line is folded once, so each anchor
+        costs ``O(log n)`` however far its name runs, and an ASCII line builds nothing."""
+        if self._kept is None:
+            if self.text.isascii():
+                return False
+            n = len(self.text)
+            kept = array("l", [0]) * (n + 1)
+            parts: list[str] = []
+            for p, ch in enumerate(self.text):
+                kept[p] = len(parts)
+                if ord(ch) not in DEFAULT_IGNORABLE:
+                    parts.append(ch)
+            kept[n] = len(parts)
+            self._kept = (kept, _ValueScan("".join(parts)))
+        kept, view = self._kept
+        if kept[eq] - kept[i] == eq - i:
+            return False  # nothing removed: the raw reading already answered it
+        return view.session_name_at(kept[i], kept[eq])
 
     def _braced(self, svs: int, sve: int) -> bool:
         # Mirrors checks._braced, minus the "\n not in inner" test: a cookie value never

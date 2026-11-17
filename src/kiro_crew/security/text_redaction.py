@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import re
 import string
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.jwt_header import is_jwt_header
 from kiro_crew.security import _submodule
@@ -143,6 +143,22 @@ _PEM_HOLD_RE = re.compile(
 # the start of a JWT, we raise the cap to this larger ceiling so the whole token
 # is rejoined before emission while still keeping the buffer bounded.
 _STREAM_HOLDBACK_JWT_MAX = 4096
+# The structured stream's tails this stream drops by: a header line, the whole text.
+_ENGINE_LINE_TAIL = "line"
+_ENGINE_ALL_TAIL = "all"
+
+
+def _open_cookie_line(buf: str, carrier: int) -> bool:
+    """Whether a Cookie header name before *carrier* (the dropped credential's
+    start) opens a line that is still running, read by the cookie reader's grammar:
+    a later pair is read from that name, so a drop inside the line runs to its end."""
+    from kiro_crew.security.redaction_structured.headers import opens_cookie_header
+
+    line_start = max(buf.rfind("\n", 0, carrier), buf.rfind("\r", 0, carrier)) + 1
+    if "\n" in buf[carrier:] or "\r" in buf[carrier:]:
+        return False
+    return opens_cookie_header(buf, line_start, carrier)
+
 
 # A sticky discard consumes only bytes that the ARMING anchor defines as value
 # bytes. These two classes are the existing classes from the partial JWT and
@@ -273,6 +289,27 @@ def _snap_back(buf: str, cut: int) -> int:
     return cut
 
 
+def _decided_cut(buf: str, engine_cut: int, cut: int | None = None, context: str = "") -> int:
+    """The one rule a commit at the detectors' cut keeps out of a value the plan reads
+    whole, for both callers. The safety cut passes its word-start snap as *cut*: it is
+    a lower bound in a ``min``, so a span it lands in or ends at moves it back before
+    that span (:func:`_outside_batch_spans`). The Phase B floor passes nothing: it is a
+    raise in a ``max``, so a closing quote right at the detectors' cut goes forward
+    with the value it closes (a slice that stops before it reads as an unterminated
+    quote, which the plan leaves unmasked), and the floor never snaps back below its
+    raise (a Cookie pair right after ``Cookie:`` with no blank before it). The
+    detectors' own cut already sits outside every hit, so the plan is read only when
+    the cut moved from it."""
+    from kiro_crew.security.redaction_structured.headers import VALUE_QUOTES
+
+    if cut is not None:
+        return cut if cut == engine_cut else _outside_batch_spans(buf, cut, context)
+    cut = engine_cut
+    if cut < len(buf) and buf[cut] in VALUE_QUOTES:
+        cut += 1
+    return cut if cut == engine_cut else _outside_batch_spans(buf, cut, context)
+
+
 def _word_start(buf: str, cut: int) -> int:
     """The detectors' ``cut`` moved back to the start of its word, as the natural cut ends at one.
 
@@ -335,6 +372,7 @@ class StreamRedactor:
         "_discard_kind",
         "_discarded",
         "_ctx",
+        "_engine_line",
         "_engine_tail",
         "_engine_pad",
         "_boundary",
@@ -354,6 +392,7 @@ class StreamRedactor:
         self._ctx = ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._engine_line: object | None = None
         self._boundary = False
         # Where the last committed private-key block's END line ends, and the blocks
         # the detectors' last read ended, all in offsets from the buffer's start.
@@ -384,7 +423,7 @@ class StreamRedactor:
     def _left(self, raw: str) -> None:
         """Note raw text that left the buffer (emitted or dropped), for the look-behind."""
         keep = _submodule(_SEAM).stream_context_max()
-        self._ctx = (self._ctx + raw)[-keep:]
+        self._ctx = _submodule(_SEAM).stream_look_behind(self._ctx + raw)
         # A block whose BEGIN left the buffer is decided: whole text resumes its
         # private-key scan after the block's END line, so the stream does too.
         k = len(raw)
@@ -397,15 +436,28 @@ class StreamRedactor:
     def _engine_discard(self) -> str | None:
         """Drop a structured unit's continuation; None once the unit has ended."""
         seam = _submodule(_SEAM)
-        dropped, self._engine_pad, done = seam.discard_run(
-            self._engine_tail, self._engine_pad, self._buf
-        )
+        if self._engine_tail == _ENGINE_LINE_TAIL:
+            # A Cookie line drop: read, never emitted, and carried through any unit
+            # anchored on the line that runs past its end (the structured stream's
+            # shared line drop).
+            line: Any = self._engine_line
+            if line is None:
+                line = self._engine_line = seam.line_drop()
+            dropped, done = line.step(self._ctx, self._buf)
+            if line.tail_all:
+                self._engine_tail, self._engine_line = _ENGINE_ALL_TAIL, None
+                dropped, done = len(self._buf), False
+        else:
+            dropped, self._engine_pad, done = seam.discard_run(
+                self._engine_tail, self._engine_pad, self._buf
+            )
         self._left(self._buf[:dropped])
         self._buf = self._buf[dropped:]
         if not done:
             return ""
         self._engine_tail = ""
         self._engine_pad = 0
+        self._engine_line = None
         return None
 
     def feed(self, chunk: str) -> str:
@@ -569,13 +621,9 @@ class StreamRedactor:
             # Snapped back like the natural cut, and out of any span the plan replaces,
             # so a commit never ends inside a value the plan reads whole. The detectors'
             # own cut already sits outside every hit, so only a snap that moved it is read.
-            snapped = _word_start(self._buf, engine.cut)
-            engine_cut = (
-                snapped
-                if snapped == engine.cut
-                else _outside_batch_spans(self._buf, snapped, self._ctx)
+            safety_cuts.append(
+                _decided_cut(self._buf, engine.cut, _word_start(self._buf, engine.cut), self._ctx)
             )
-            safety_cuts.append(engine_cut)
 
         # The PEM hold refuses any commit at this boundary.
         i = 0 if pem_hold else min(safety_cuts)
@@ -702,9 +750,36 @@ class StreamRedactor:
                         aws_keyed_anchor.start("val"),
                         len(self._buf) - stream_aws_anchor.LABEL_CARRY,
                     )
+                carriers = [
+                    m.start()
+                    for m in (token_anchor, bearer_anchor, aws_keyed_anchor, partial_jwt)
+                    if m is not None
+                ]
+                # The look-behind keeps a running Cookie line's name (its pairs commit).
+                read = self._ctx + self._buf
+                if _open_cookie_line(read, len(self._ctx) + min(carriers, default=i)):
+                    # A Cookie line still open: a later pair is read from its
+                    # name, so the drop runs through the line's end.
+                    self._discarding = False
+                    self._discard_kind = None
+                    from kiro_crew.security.redaction_structured.model import TAIL_LINE
+
+                    self._engine_tail, self._engine_pad = TAIL_LINE, 0
+                    drop_end = len(self._buf)
                 commit, dropped = self._buf[:i], self._buf[i:drop_end]
                 self._buf = self._buf[drop_end:]
                 out = self._redact_window(commit) if commit else ""
+                if self._engine_tail == _ENGINE_LINE_TAIL:
+                    # The line drop reads the window it drops before the look-behind
+                    # loses it, so a block anchored anywhere on the line is carried to
+                    # its END. Its unread tail goes back to the buffer for the next step.
+                    line: Any = _submodule(_SEAM).line_drop()
+                    seen, _ = line.step(self._ctx, dropped)
+                    if line.tail_all:
+                        self._engine_tail, line, seen = _ENGINE_ALL_TAIL, None, len(dropped)
+                    self._engine_line = line
+                    self._buf = dropped[seen:] + self._buf
+                    dropped = dropped[:seen]
                 self._left(dropped)
                 return out + _redaction._REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
@@ -739,6 +814,14 @@ class StreamRedactor:
             # they hold nothing in keeps the floor.
             if engine is not None and engine.undecided:
                 i = min(i, _outside_batch_spans(self._buf, engine.cut, self._ctx))
+            # A commit never splits a unit the detectors have decided: the floor
+            # commits up to their cut (:func:`_decided_cut`, without the safety
+            # cut's word-start snap) when it falls below it. The buffer alone cannot show that unit: a Cookie pair's name
+            # may sit only in the look-behind, so the plan of the buffer has no span.
+            # Everything before the detectors' cut is decided, and the floor already
+            # overrides the other holds at the cap.
+            if engine is not None:
+                i = max(i, _decided_cut(self._buf, engine.cut, context=self._ctx))
 
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
@@ -810,6 +893,7 @@ class StreamRedactor:
         self._engine_pad = 0
         self._armour_from = 0
         self._armour_blocks = ()
+        self._engine_line = None
 
     @property
     def held(self) -> str:
