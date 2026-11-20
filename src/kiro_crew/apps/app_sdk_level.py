@@ -31,6 +31,8 @@ Level 15 adds ``permissions.browserRecipes``: fixed clicks on CSS selectors the 
 runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action:
 "recipe"``, the SDK's ``useBrowserMedia().runRecipe``) and, for a ``watch`` recipe, by
 itself while the app's media plays.
+Level 16 adds the page's ``FileTree``: the dashboard's project file tree, behind the
+app's declared ``/api/project/tree``.
 """
 
-APP_SDK_LEVEL = 15
+APP_SDK_LEVEL = 16

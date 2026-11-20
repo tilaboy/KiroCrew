@@ -26,5 +26,7 @@
  *
  * Level 15 adds `permissions.browserRecipes` and `useBrowserMedia().runRecipe`: fixed
  * clicks on selectors the gateway runs on the app's own agent's tab, no model asked.
+ * Level 16 adds `FileTree`: the dashboard's project file tree, behind the app's
+ * declared `/api/project/tree`.
  */
-export const APP_SDK_LEVEL = 15
+export const APP_SDK_LEVEL = 16
