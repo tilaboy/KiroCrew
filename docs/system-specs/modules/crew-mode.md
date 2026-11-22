@@ -5246,7 +5246,15 @@ things here and leaves every other git step to the worker's prompt
    an edition runtime without the method, or one that raises, answers `False`
    too. The repository is read from git's common
    directory, so a path inside another Bot's worktree maps to the same
-   repository.
+   repository. An edition can instead give each worker its own worktree of a
+   repository (`AgentRuntime.worker_worktree_subpath(repo)` names one to three
+   folders; platform-context.md): it goes at
+   `<crewmate workspace>/worktrees/<slug>/workers/<worker>/<folders...>`
+   (`worker_path_for`; the worker is its slot key, cleaned like a slug) on
+   `<prefix><slug>/<worker>/<repo>` (`worker_branch_for`), and only a worker
+   turn gets it. After each `git worktree add` the gateway makes, in either
+   layout, the edition's `prepare_worktree(repo, path)` runs; a raise undoes the
+   add and that worktree is refused.
 2. **The worker runs there.** At the start of a worker's turn (a `template`
    record on `kirocrew-mate-worker` with the Bot's `member_id`; the
    conductor is left alone), after its Permissions are seeded and before the
@@ -5286,9 +5294,85 @@ things here and leaves every other git step to the worker's prompt
    a worktree of its repository with `git worktree remove` (never `--force`).
    A slug another live crew still derives keeps them all, as it keeps the
    goal check-ins.
-   One with uncommitted changes, ignored files or a repository that configures a
-   checkout filter is kept and logged; so is anything git does not register.
-   Branches stay, and the repositories' own checkouts are never touched.
+   A shared one with ignored files or a repository that configures a checkout
+   filter is kept and logged, and so is anything git does not register;
+   `git worktree remove` refuses the rest itself. A worker's own worktree, under
+   `workers/`, is removed only when `crewmate_worktree.is_provably_disposable`
+   proves it loses nothing, every git read forced with `-c` overrides
+   (`status.showUntrackedFiles=all`, `core.untrackedCache=false`,
+   `core.ignoreStat=false`, `core.fileMode=true` off Windows, and the other
+   stat settings) so no
+   repository or user config can hide state: git lists it, it is not locked, it
+   is on a branch (not a detached HEAD), the worker's own one
+   (`worker_branch_for`) on a worker's close and any branch on the Bot's deletion,
+   the repository names no checkout filter, no submodule folder holds anything
+   (a checked-out submodule, or files written into an empty one, which `status`
+   never lists and `git worktree remove` deletes) and no gitlink is staged at a
+   commit other than `HEAD`'s, read before any `status` so no submodule's own
+   commands run (an empty folder, as `git worktree add` leaves every submodule,
+   holds nothing; one that cannot be read keeps it), no commit is reached only
+   by the worktree's own `HEAD` reflog or its per-worktree refs (`refs/worktree/`,
+   `refs/bisect/`, `refs/rewritten/`), which go with it (branches, tags and
+   stashes are shared and stay), `status` opens every folder (it only warns
+   about one it cannot read), `status` shows nothing at all (untracked and ignored files
+   included, never entering a submodule), and no tracked file flagged
+   assume-unchanged or skip-worktree is edited or deleted (both hidden from
+   `status`; only a skip-worktree file absent from a worktree with sparse
+   checkout on is left out by design, and holds nothing). An ignored file keeps it whatever
+   ignores it (`.gitignore`, `info/exclude`, `core.excludesFile`): a `.env` or a
+   notes file is ignored as often as build output, and no rule tells them apart.
+   An isolated `spawn_run` worktree's removal asks the same function, detached at
+   its recorded base (`head_at`). Any other answer, a
+   git read that fails or times out included, keeps it and logs why. A
+   worker's close also asks again, under each worktree's lookup lock just before
+   its removal, whether the session was reopened, and keeps every worktree not
+   yet removed once it was.
+   Branches stay, and the repositories' own checkouts are never touched. The
+   `workers/` folder is searched too. A worker's own worktrees also go, the same
+   way, when its session is closed (`chat_api.slot_lifecycle.close_slot` calls
+   `crewmate_worktree_scope.release_closed_worker` once the close commits, in the
+   background, for a slot on `kirocrew-mate-worker` whose project no person
+   picked, unless a slot holds that key again; the cleanup checks that again
+   right before it touches anything, the slot map and the keys a resume reserves
+   while it builds its slot (`_slots_under_construction`) read directly so a
+   resume still building its slot counts, even while it holds that slot outside
+   the map). The worker is recognised from its session's
+   execution record, read off the loop with the durable record included, so a
+   persistent worker or one restored after a restart counts. When the saved
+   project sits in one of the worker's worktrees it is rewritten to the same
+   folder in the repository's checkout FIRST, and only then is anything removed,
+   so a restart at any point resumes on a path the next turn's lookup can use: it
+   reuses the worktree if it is still there and rebuilds it on the worker's own
+   branch if it is gone. A saved project in the worker's own folder that maps
+   to no checkout (a layout other than the edition's current one), or to a
+   checkout folder that does not exist (a folder only the worker's branch has)
+   or that a symlink on the way leads elsewhere (out of the repository, or into
+   another one), keeps every worktree of that worker. The move also records the
+   repository in the saved project's metadata (`worker_checkout_repo`, which a
+   slot save carries forward): while the saved project is still that path, the
+   next turn finds the worktree from that repository and the folder's path in
+   it, never from what the checkout holds there by then. So a checkout folder
+   gone, now a file, a link out of the repository or into another one, another
+   repository itself, unreadable, renamed in case, or absent on the branch the
+   checkout switched to, before the close or after it, still resumes the worker
+   in its own worktree's same folder. When the cleanup finishes having removed
+   the worktree it points a live slot of the worker still on the old path at the
+   checkout path, unless a person picked that slot's project; a cleanup that
+   kept the worktree (the worker came back, or it holds work) hands no move back,
+   so a turn that stopped waiting and runs there stays put; for a resume still building its slot it keeps the move
+   in memory (at most 256 entries, oldest dropped first) for the worker's next
+   turn. That turn first waits, up to two minutes, for every cleanup of that
+   worker still running, a turn on a picked project included, so two quick
+   closes leave no older cleanup removing under the turn. A project a cleanup
+   moved during that wait is handed to the turn like a lookup's (its binding
+   refreshed, a provider started elsewhere reset), even when the lookup then
+   finds no worktree. A worktree on a
+   branch other than the worker's own is kept by the same predicate, since one
+   made again would start on the worker's own branch. The idle sweep's archive keeps them
+   (`release_worktrees=False`). Each folder of the worker holding a
+   `.git` within three levels is a worktree candidate, links are never followed,
+   and folders left empty go. After each removal the edition's
+   `release_worktree(repo, path)` runs.
 
 Git runs through the follow-up card's sandboxed runner
 (`handlers/worktree._run_git`): no hooks, no fsmonitor, and a repository
