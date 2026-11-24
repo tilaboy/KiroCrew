@@ -8173,7 +8173,8 @@ on an installed app's `credentialMasks` (§37), `permissions.chatLaunch` and
 SDK names, one batch: `canonical_file_path`, `vet_public_url`, `UrlRejectedError`,
 `address_is_not_public`, `sniff_raster_mime` and `RASTER_SNIFF_BYTES`, and the
 descriptor-pinned path walk and copy (§40); level 15 adds
-`permissions.browserRecipes` and `useBrowserMedia().runRecipe` (§45). Several seams
+`permissions.browserRecipes`, `useBrowserMedia().runRecipe` (§45) and the SDK's
+`isStatusRow`. Several seams
 share level 7, three share level 8, the open batch that level 10 starts shares level 10, and the backend SDK
 batch shares level 14, so an app that needs one
 feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an

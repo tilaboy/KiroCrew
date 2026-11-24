@@ -30,7 +30,8 @@ also adds the descriptor-pinned path walk and copy: ``supports_pinned_walk``,
 Level 15 adds ``permissions.browserRecipes``: fixed clicks on CSS selectors the gateway
 runs on the app's own agent's tab, through ``POST /api/browser/media`` (``action:
 "recipe"``, the SDK's ``useBrowserMedia().runRecipe``) and, for a ``watch`` recipe, by
-itself while the app's media plays.
+itself while the app's media plays; and the SDK's ``isStatusRow``, the chat's verdict
+on a row the gateway wrote.
 """
 
 APP_SDK_LEVEL = 15
