@@ -131,11 +131,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for ``mcp-core`` (505 to 506): the App Store search's declaration lives in
 #: its own ``kiro_crew.mcp_tools.catalog.app_store``, which the core listing loads from
 #: ``mcp_tools.DOMAIN_MODULES`` like every other domain.
+#: Raised by 1 for each server: the ``contributes.widgets`` block lives in its own
+#: stdlib-only ``kiro_crew.apps.manifest_widgets``, which ``manifest_contributes`` imports
+#: because the ``Contributes`` dataclass needs ``WidgetsConfig`` at import, as with
+#: ``manifest_memory_providers`` above; that one file is the whole rise.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 506,
-    "mcp-cron": 372,
-    "mcp-guide": 366,
-    "mcp-mate": 369,
+    "mcp-core": 507,
+    "mcp-cron": 373,
+    "mcp-guide": 367,
+    "mcp-mate": 370,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
