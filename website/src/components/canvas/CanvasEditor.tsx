@@ -379,13 +379,13 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     const b = canvasRef.current
     if (!id) return b
     const shape = b.shapes.find(s => s.id === id)
-    // An empty text box is nothing: it goes, the way it does in FigJam.
-    const next = shape && shape.kind === 'text' && !shape.text.trim() ? removeShapes(b, new Set([id])) : b
+    // An empty text box or sticky is nothing: it goes when its edit ends.
+    const next = shape && (shape.kind === 'text' || shape.kind === 'sticky') && !shape.text.trim() ? removeShapes(b, new Set([id])) : b
     const top = undo.current[undo.current.length - 1]
     if (next !== b && top && JSON.stringify(top.before) === JSON.stringify(next)) {
-      // A new text box left empty: the canvas is back where it was before the box
+      // A new shape left empty: the canvas is back where it was before the shape
       // was made, so the step that made it goes rather than a second step being
-      // added, and one undo never brings back an empty placeholder box.
+      // added, and one undo never brings back an empty placeholder.
       undo.current.pop()
       onChange(next)
     } else if (editStart.current && JSON.stringify(editStart.current) !== JSON.stringify(next)) commit(next, editStart.current)
@@ -544,7 +544,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (target.closest('[data-canvas-ui]') || (editing && target.closest('textarea'))) return
     // The right button opens the menu (onContextMenu); it never starts a drag.
     if (e.button === 2) return
-    // Ending an edit can remove an empty text box, so the press reads the
+    // Ending an edit can remove an empty text box or sticky, so the press reads the
     // document that leaves rather than the one this render was given.
     const doc = editing ? endEdit() : canvas
     root.current?.focus({ preventScroll: true })
@@ -577,7 +577,7 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (tool !== 'select' && tool !== 'connector') {
       // The press creates a shape and focuses its text editor. Left to its
       // default, the same press then moves focus to the canvas, which ends the
-      // edit at once (and an empty text box is deleted when its edit ends).
+      // edit at once (and an empty text box or sticky is deleted when its edit ends).
       e.preventDefault()
       setDrag({ kind: 'create', shape: tool, start: world, snapshot: doc, id: null })
       return
@@ -751,7 +751,11 @@ export default function CanvasEditor({ canvas, onChange, readOnly = false, epoch
     if (readOnly || (e.target as HTMLElement).closest('[data-canvas-ui]')) return
     const world = toWorld(e.clientX, e.clientY)
     const hit = shapeAt(canvas.shapes, world, { zoom: view.zoom })
-    if (hit) { setSelected(new Set([hit.id])); setEditing(hit.id) } else create('sticky', world)
+    // Empty canvas is left alone: a double-click made out of habit must not drop
+    // a shape. New shapes come from the dock or a tool key.
+    if (!hit) return
+    setSelected(new Set([hit.id]))
+    setEditing(hit.id)
   }
 
   // ---- keys --------------------------------------------------------------------------
