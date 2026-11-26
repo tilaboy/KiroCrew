@@ -27,6 +27,18 @@ from kiro_crew.testing.wait import finished
 # the one-module registry and against the split one.
 
 
+@pytest.fixture(autouse=True)
+def _redirect_guard_off(_floor_monkeypatch):
+    """The redirect-config guard spawns its own ``git config`` before each network
+    op; these tests assert exact fetch/pull spawns, so neutralise it to a no-op.
+    Its own behaviour is covered in ``test_apps_registry_no_redirects.py``."""
+
+    async def _none(env, cwd):
+        return None
+
+    _floor_monkeypatch.setattr(registry, "_redirect_config_refusal", _none)
+
+
 class TestTheBundledSeedIsTheWheelsOwnFile:
     def test_the_seed_path_sits_beside_the_registry_module(self):
         # The seed ships as ``kiro_crew/apps/app-registry.json``; a module that
@@ -494,6 +506,7 @@ class TestGitFetchAndPullFailClosed:
         monkeypatch.setattr(registry, "is_clone_host_trusted", lambda target: True)
         monkeypatch.setattr(registry, "_clone_origin_url", _origin)
         monkeypatch.setattr(registry, "_read_clone_branch", lambda path: "main")
+
         spawned = self._spawns(
             monkeypatch,
             [(("git", "-c"), lambda a, k: self._Proc(returncode=1, output=b"no"))],
@@ -504,9 +517,16 @@ class TestGitFetchAndPullFailClosed:
             "ok": False,
             "error": "git pull failed (exit 1); not installing stale code",
         }
-        # The hooks/fsmonitor neutralizer and the LFS endpoint pin are spliced in
-        # right after ``git``.
-        hooks = ("-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false")
+        # The hooks/fsmonitor/redirect neutralizer and the LFS endpoint pin are
+        # spliced in right after ``git``. No URL-derived key is built.
+        hooks = (
+            "-c",
+            f"core.hooksPath={os.devnull}",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "http.followRedirects=false",
+        )
         lfs_pin = ("-c", f"lfs.url={url}/info/lfs")
         assert spawned == [("git", *hooks, *lfs_pin, "pull", "--ff-only", url, "main")]
         assert log[-1] == "git pull failed (exit 1) — aborting"

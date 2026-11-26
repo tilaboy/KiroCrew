@@ -420,6 +420,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _fetch_git_blob,
         _is_safe_repo_identifier,
         _read_declared_art,
+        _redirect_config_refusal,
         _touch_served_blob,
     )
     from kiro_crew.apps.routes_bot_grants import (  # noqa: F401

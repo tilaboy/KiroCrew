@@ -49,8 +49,13 @@ from kiro_crew.apps.registry import (
     known_registry_repos,
     minimal_env,
 )
-from kiro_crew.apps.registry_pipeline.checkout import _HOOKS_NEUTRALIZER_ARGV
-from kiro_crew.apps.registry_pipeline.git_targets import _lfs_endpoint_pin_argv
+from kiro_crew.apps.registry_pipeline.checkout import (
+    _HOOKS_NEUTRALIZER_ARGV,
+    _redirect_config_refusal,
+)
+from kiro_crew.apps.registry_pipeline.git_targets import (
+    _lfs_endpoint_pin_argv,
+)
 from kiro_crew.apps.registry_pipeline.subprocess_env import (
     _git_network_env,
     _proxy_env_has_credentials,
@@ -575,11 +580,15 @@ async def _fetch_git_blob(
                 _prepare=wrap_argv,
             )
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
+            blob_env = _git_network_env(clone_env, git_url)
+            if await _redirect_config_refusal(blob_env, Path(tmp_root)) is not None:
+                logger.debug("blob clone refused: config enables redirects")
+                return False
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=_git_network_env(clone_env, git_url),
+                env=blob_env,
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)

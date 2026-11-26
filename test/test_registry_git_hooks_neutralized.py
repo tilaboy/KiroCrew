@@ -26,7 +26,22 @@ from typing import Any
 import pytest
 
 from kiro_crew.apps import routes
+from kiro_crew.apps import routes_art as _routes_art
 from kiro_crew.apps.registry_pipeline import checkout, indexes, manifests
+
+
+@pytest.fixture(autouse=True)
+def _redirect_guard_off(_floor_monkeypatch):
+    """Neutralise the pre-network redirect-config guard: it spawns its own
+    ``git config`` before each network op, which would pollute these spawn/env
+    assertions. Its behaviour is covered in ``test_apps_registry_no_redirects.py``."""
+
+    async def _none(env, cwd):
+        return None
+
+    for _mod in (checkout, manifests, indexes, _routes_art):
+        _floor_monkeypatch.setattr(_mod, "_redirect_config_refusal", _none)
+
 
 _HOOKS_VALUE = f"core.hooksPath={os.devnull}"
 

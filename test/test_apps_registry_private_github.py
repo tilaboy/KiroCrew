@@ -36,6 +36,24 @@ _PINNED = "a" * 40
 
 
 @pytest.fixture(autouse=True)
+def _redirect_guard_off(_floor_monkeypatch):
+    """Neutralise the pre-network redirect-config guard: these tests mock git
+    spawns generically and assert the failure cause/behaviour, so the guard would
+    otherwise read a mocked failure and refuse first. Its behaviour is covered in
+    ``test_apps_registry_no_redirects.py``."""
+    from kiro_crew.apps import routes_art as _ra
+    from kiro_crew.apps.registry_pipeline import checkout as _ck
+    from kiro_crew.apps.registry_pipeline import indexes as _ix
+    from kiro_crew.apps.registry_pipeline import manifests as _mf
+
+    async def _none(env, cwd):
+        return None
+
+    for _mod in (_ck, _mf, _ix, _ra):
+        _floor_monkeypatch.setattr(_mod, "_redirect_config_refusal", _none)
+
+
+@pytest.fixture(autouse=True)
 def _provider_bins_not_strict(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test starts outside strict provider-binary mode; strict cases opt in."""
     _floor_monkeypatch.delenv("KIROCREW_PROVIDER_BIN_STRICT", raising=False)

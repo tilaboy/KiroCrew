@@ -14,6 +14,24 @@ from external_registry_helpers import _catalog_absent  # noqa: F401
 from external_registry_helpers import _explicit_registry_execution_admission  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _redirect_guard_off(_floor_monkeypatch):
+    """Neutralise the pre-network redirect-config guard: these tests mock git
+    spawns generically, so the guard's own ``git config`` probe would read a
+    mocked failure and refuse. Its behaviour is covered in
+    ``test_apps_registry_no_redirects.py``."""
+    from kiro_crew.apps import routes_art as _ra
+    from kiro_crew.apps.registry_pipeline import checkout as _ck
+    from kiro_crew.apps.registry_pipeline import indexes as _ix
+    from kiro_crew.apps.registry_pipeline import manifests as _mf
+
+    async def _none(env, cwd):
+        return None
+
+    for _mod in (_ck, _mf, _ix, _ra):
+        _floor_monkeypatch.setattr(_mod, "_redirect_config_refusal", _none)
+
+
 class TestCloneFailureDiagnostics:
     """An index-originated clone failure says it ran credential-free; an owner one does not.
 

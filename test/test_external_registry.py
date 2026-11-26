@@ -68,6 +68,23 @@ def sample_entries():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _redirect_guard_off(_floor_monkeypatch):
+    """These tests mock git clones generically and assert the failure CAUSE; the
+    pre-network redirect guard would otherwise read a mocked failure and refuse
+    first. Its behaviour is covered in ``test_apps_registry_no_redirects.py``."""
+    from kiro_crew.apps import routes_art as _ra
+    from kiro_crew.apps.registry_pipeline import checkout as _ck
+    from kiro_crew.apps.registry_pipeline import indexes as _ix
+    from kiro_crew.apps.registry_pipeline import manifests as _mf
+
+    async def _none(env, cwd):
+        return None
+
+    for _mod in (_ck, _mf, _ix, _ra):
+        _floor_monkeypatch.setattr(_mod, "_redirect_config_refusal", _none)
+
+
 class TestExternalRegistryCache:
     def test_read_returns_none_when_no_file(self, cache_dir):
         assert _read_external_registry_cache("nonexistent") is None

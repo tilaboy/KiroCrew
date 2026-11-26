@@ -761,26 +761,34 @@ class TestAPatchOnTheFacadeReachesEveryCallSite:
             ("/opt/test/npm", "install"),
         ], non_git
         git_spawns = [argv for argv in spawned if argv and argv[0] == "git"]
-        # ``git remote get-url`` (the checkout origin read) plus the two clone sites.
-        assert len(git_spawns) == 3, git_spawns
-        origin, *clones = git_spawns
+        # ``git remote get-url`` (the checkout origin read), plus for each of the two
+        # clone sites a pre-clone redirect-config guard (``git config``) followed by
+        # the anonymous ``git clone --depth 1``.
+        assert len(git_spawns) == 5, git_spawns
+        origin, *rest = git_spawns
         assert origin[_git_subcommand_index(origin) : _git_subcommand_index(origin) + 3] == (
             "remote",
             "get-url",
             "origin",
         ), origin
-        # Both remaining git spawns are the anonymous ``git clone --depth 1`` of
-        # indexes' and manifests' call sites: assert the subcommand slot and the
-        # ``--depth`` argument right after it.
+        configs = [a for a in rest if a[_git_subcommand_index(a)] == "config"]
+        clones = [a for a in rest if a[_git_subcommand_index(a)] == "clone"]
+        assert len(configs) == 2, configs
         assert len(clones) == 2, clones
+        for config in configs:
+            sub = _git_subcommand_index(config)
+            assert config[sub : sub + 2] == ("config", "-z"), config
         for clone in clones:
             sub = _git_subcommand_index(clone)
             assert clone[sub] == "clone", clone
             assert clone[sub + 1 : sub + 3] == ("--depth", "1"), clone
-        # The order the call sites ran in is preserved (indexes before manifests).
+        # The order the call sites ran in is preserved: origin read, detect probe,
+        # then each clone site's guard+clone, then the build.
         assert [argv[0] for argv in spawned] == [
             "git",
             "/bin/sh",
+            "git",
+            "git",
             "git",
             "git",
             "/opt/test/npm",

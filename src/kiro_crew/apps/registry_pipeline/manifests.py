@@ -36,6 +36,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _git_fetch_branch,
     _git_fetch_commit,
     _mkdtemp_settled,
+    _redirect_config_refusal,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.clone_metadata import _clone_branch_matches
@@ -370,6 +371,11 @@ async def _fetch_app_manifest(
                 _git_transport_env(credential_target, git_url, clone_env), git_url
             )
             transport_env["LC_ALL"] = _GIT_CLONE_LOCALE
+            # Refuse before the clone if global config (in scope under this env)
+            # enables a URL-scoped redirect; a fresh clone has no checkout config.
+            if await _redirect_config_refusal(transport_env, Path(tmp_root)) is not None:
+                logger.debug("manifest clone refused: checkout config enables redirects")
+                return None
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,

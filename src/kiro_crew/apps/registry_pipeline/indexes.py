@@ -33,6 +33,7 @@ from kiro_crew.apps.registry_pipeline.checkout import (
     _communicate_with_timeout,
     _git_fetch_branch,
     _mkdtemp_settled,
+    _redirect_config_refusal,
     _rmtree_force_settled,
 )
 from kiro_crew.apps.registry_pipeline.gh_credential import (
@@ -441,6 +442,14 @@ async def _fetch_external_registry_index(
             sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
             process_env = _git_network_env(minimal_env(), git_url)
             process_env["LC_ALL"] = _GIT_CLONE_LOCALE
+            # Refuse before the clone if global config (in scope under this env)
+            # enables a URL-scoped redirect; a fresh clone has no checkout config.
+            if await _redirect_config_refusal(process_env, Path(tmp_root)) is not None:
+                logger.debug("external registry clone refused: config enables redirects")
+                _sel_outcome("failed")
+                # A failure marker, not ``[]``: an empty list reads as "fetched,
+                # no rows" and would overwrite the cached index with nothing.
+                return _failed(_FETCH_CAUSE_OTHER)
             proc = await create_subprocess_limited(
                 *sandboxed_cmd,
                 stdout=asyncio.subprocess.PIPE,
