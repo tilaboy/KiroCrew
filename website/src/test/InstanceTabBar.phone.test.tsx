@@ -1,15 +1,19 @@
-/* The crew switcher's chips in the phone form: icon-only, with a letter badge
- * in place of a remote crew's state dot. The desktop form keeps the name. */
+/* The crew switcher's chips in the phone form: icon-only. A remote crew wears
+ * its icon in the badge's disc, whose outline names the state; a chip with no
+ * icon keeps its letters there. The desktop form keeps the name. */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar, { setCrewPins, setStableOrder } from '../components/InstanceTabBar'
+import { __reloadCrewIconsForTests } from '../components/crewIcons'
+import type { HostModel } from '../store/instancesSlice'
 import type { InstanceView, SsoStatus } from '../api/client'
 
 vi.mock('../api/client', () => ({ api: { listInstances: vi.fn(), connectInstance: vi.fn() } }))
 import { api } from '../api/client'
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
+import { isEmbeddedPane } from '../lib/embedded'
 let mobile = true
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mobile }))
 
@@ -42,18 +46,21 @@ async function activeChip(container: HTMLElement) {
 beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
+  __reloadCrewIconsForTests()
+  vi.mocked(isEmbeddedPane).mockReturnValue(false)
   setCrewPins([])
   setStableOrder(false)
   mobile = true
 })
 
 describe('InstanceTabBar on a phone', () => {
-  it('draws a remote crew as its letter badge, with the name only in the accessible name', async () => {
+  it('draws a remote crew as its icon in the badge disc, and the name only in the accessible name', async () => {
     const { container } = renderBar('stg')
     const chip = await activeChip(container)
-    // `staging` and `sandbox` share an S, so the badge takes the second letter.
-    expect(within(chip).getByTestId('crew-letter-badge')).toHaveTextContent(/^St$/)
-    expect(within(chip).getByTestId('crew-letter-badge')).toHaveAttribute('data-state', 'connected')
+    const badge = within(chip).getByTestId('crew-letter-badge')
+    expect(badge.querySelector('[data-crew-icon]')?.getAttribute('data-crew-icon')).toBeTruthy()
+    expect(badge).toHaveAttribute('data-state', 'connected')
+    expect(badge).toHaveTextContent('')
     expect(chip).not.toHaveTextContent('staging')
     expect(chip.getAttribute('aria-label')).toContain('staging')
   })
@@ -64,9 +71,9 @@ describe('InstanceTabBar on a phone', () => {
     await activeChip(container)
     const row = await screen.findByTestId('crew-chip-row')
     const badges = within(row).getAllByTestId('crew-letter-badge')
-    expect(badges.map(b => b.textContent)).toEqual(['Sa', 'D'])
-    expect(badges[0]).toHaveAttribute('data-state', 'error')
-    expect(badges[0]).toHaveClass('border')
+    expect(badges.map(b => b.getAttribute('data-state'))).toEqual(['error', 'connected'])
+    expect(badges.every(b => b.querySelector('[data-crew-icon]'))).toBe(true)
+    expect(badges[0]).toHaveClass('border', 'border-dashed')
     expect(row).not.toHaveTextContent(/sandbox|devdesk/)
     // The state word "Tunnel error" stays in the accessible name and the menu.
     expect(row).not.toHaveTextContent(/error/i)
@@ -92,6 +99,7 @@ describe('InstanceTabBar on a phone', () => {
     const errorBadge = within(error).getByTestId('crew-letter-badge')
     expect(errorBadge).toHaveAttribute('data-state', 'error')
     expect(errorBadge).toHaveClass('border', 'border-dashed')
+    expect(errorBadge.querySelector('[data-crew-icon]')).not.toBeNull()
 
     // A connecting crew's chip draws the spinner in place of the badge.
     const connecting = chip('kilo')
@@ -105,6 +113,7 @@ describe('InstanceTabBar on a phone', () => {
     expect(stoppedBadge).toHaveAttribute('data-state', 'stopped')
     expect(stoppedBadge).toHaveClass('border', 'border-solid')
     expect(stoppedBadge).not.toHaveClass('border-dashed')
+    expect(stoppedBadge.querySelector('[data-crew-icon]')).not.toBeNull()
 
     // The menu row still names the state in visible words.
     const u = userEvent.setup()
@@ -123,12 +132,40 @@ describe('InstanceTabBar on a phone', () => {
   })
 })
 
+describe('a phone chip with no icon', () => {
+  it('keeps the letter badge, as in a pane whose host relays no icons', async () => {
+    vi.mocked(isEmbeddedPane).mockReturnValue(true)
+    const host: HostModel = {
+      tabs: [
+        { id: 'stg', name: 'staging', sshHost: 'stg-alias', state: 'connected', unread: 0 },
+        { id: 'sbx', name: 'sandbox', sshHost: 'sbx-alias', state: 'error', unread: 0 },
+      ],
+      activeId: 'stg',
+      self: null,
+      macInset: false,
+      winInset: false,
+      linuxInset: false,
+      focusMode: null,
+      electron: true,
+      pinnedCrews: [],
+      stableOrder: false,
+    }
+    const store = createTestStore({ instances: { warm: {}, activeId: null, mru: [], unread: {}, host } })
+    const { container } = renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    const chip = await activeChip(container)
+    // `staging` and `sandbox` share an S, so the badge takes the second letter.
+    expect(within(chip).getByTestId('crew-letter-badge')).toHaveTextContent(/^St$/)
+    expect(chip.querySelector('[data-crew-icon]')).toBeNull()
+  })
+})
+
 describe('InstanceTabBar on a desktop', () => {
-  it('keeps the name and the state dot', async () => {
+  it('keeps the name beside the icon', async () => {
     mobile = false
     const { container } = renderBar('stg')
     const chip = await activeChip(container)
     expect(chip).toHaveTextContent('staging')
+    expect(chip.querySelector('[data-crew-icon]')).not.toBeNull()
     expect(within(chip).queryByTestId('crew-letter-badge')).toBeNull()
   })
 })
