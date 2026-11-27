@@ -2,7 +2,7 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import InfoTip from '../../../components/InfoTip'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
@@ -110,7 +110,9 @@ export function SortControl({ view, onChange }: { view: ListView; onChange: (sor
 /** One rail value: its checkbox, label and count. A `hint` adds a (?) after the
  *  label that explains it; the (?) sits outside the label, so pressing it, by
  *  mouse, key or touch, opens the tip and never ticks the box. */
-export function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string; onToggle: () => void }) {
+// Memoized: a facet recount re-renders only the rows whose count or tick changed,
+// when the caller passes a stable `onToggle` (FilterPanel does).
+export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string; onToggle: () => void }) {
   const id = useId()
   return <div data-facet-row className="grid min-h-11 items-center gap-x-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: `16px minmax(0,1fr)${hint ? ' auto' : ''} 48px` }}>
     <input id={id} type="checkbox" aria-label={label} className="h-4 w-4 cursor-pointer accent-accent" checked={on} onChange={onToggle} />
@@ -118,7 +120,7 @@ export function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: 
     {hint && <InfoTip text={hint} />}
     <label htmlFor={id} className="cursor-pointer text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</label>
   </div>
-}
+})
 
 /** A rail group's values, at most 16 rows high; past that the group scrolls, with a
  *  fade and a hint at its foot until the last row is in view. */
@@ -163,6 +165,11 @@ function SettledSlider({ value, onSettle, ...rest }: Omit<ComponentProps<typeof 
   return <Slider {...rest} value={draft ?? value} onChange={next => { pending.current = next; setDraft(next) }} />
 }
 
+// The filter sheet's first commit holds this many value rows, about a phone
+// screen; each following frame adds the next batch.
+const SHEET_FIRST_ROWS = 8
+const SHEET_STEP_ROWS = 8
+
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
 export function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange }: {
@@ -179,6 +186,20 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
   const { t } = useTranslation()
   const [find, setFind] = useState('')
   const needle = find.trim().toLocaleLowerCase()
+  // One stable handler per value, calling the latest onToggle, so a recount
+  // leaves the memoized rows whose count did not change alone.
+  const toggleRef = useRef(onToggle)
+  useLayoutEffect(() => { toggleRef.current = onToggle })
+  const [handlers] = useState(() => new Map<string, () => void>())
+  const handler = (group: MemoryRecordFacetGroup, value: string) => {
+    const key = `${group}\u0000${value}`
+    let toggle = handlers.get(key)
+    if (!toggle) { toggle = () => toggleRef.current(group, value); handlers.set(key, toggle) }
+    return toggle
+  }
+  // The sheet mounts its first rows with the dialog and the rest a frame at a
+  // time, so opening it never lays out every value in one frame.
+  const [budget, setBudget] = useState(capped ? Infinity : SHEET_FIRST_ROWS)
   const groups = FACET_GROUPS.filter(group => view.kind === 'all' || GROUP_KINDS[group].includes(view.kind))
   const low = view.filters.conf_min ?? 0
   const high = view.filters.conf_max ?? 1
@@ -191,6 +212,14 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
       .sort((a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
     return { group, counts, ticked, values }
   }).filter(item => item.values.length)
+  const rowCount = shown.reduce((sum, item) => sum + item.values.length, 0)
+  useEffect(() => {
+    if (budget >= rowCount) return
+    const frame = requestAnimationFrame(() => setBudget(old => old + SHEET_STEP_ROWS))
+    return () => cancelAnimationFrame(frame)
+  }, [budget, rowCount])
+  let left = budget
+  const mounted = shown.map(item => { const values = item.values.slice(0, Math.max(0, left)); left -= values.length; return { ...item, values } }).filter(item => item.values.length)
   return <div className="space-y-5">
     <div className="flex items-center">
       <div className="relative min-w-0 flex-1">
@@ -207,12 +236,12 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
       </div>
     </section>}
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
-    {shown.map(({ group, counts, ticked, values }) => {
+    {mounted.map(({ group, counts, ticked, values }) => {
       const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
       return <section key={group} aria-label={heading}>
         <PanelSectionHeader label={heading} />
         <GroupScroll capped={capped}>
-          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={() => onToggle(group, value)} />)}
+          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={handler(group, value)} />)}
         </GroupScroll>
       </section>
     })}
@@ -290,13 +319,18 @@ export function RecordMeta({ row, sort, chip, meaning = false, end }: { row: Mem
   </div>
 }
 
-/** One record in the list: text, chips, key, and its actions menu. */
-export function RecordRow({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, saved = false, chip, onSelect, onOpen, onEdit, onForget, focusRef }: {
+/** One record in the list: text, chips, key, and its actions menu. Memoized, and
+ *  each handler takes the row, so stable handlers let an unchanged row skip a render. */
+export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, selecting, selected, selectDisabled, open, focus, saved = false, chip, onSelect: select, onOpen: openRow, onEdit: editRow, onForget: forgetRow, focusRef }: {
   row: MemoryRecord; sort: MemoryRecordSort; meaning?: boolean; selecting: boolean; selected: boolean; selectDisabled: boolean; open: boolean; focus?: boolean; saved?: boolean; chip?: ChipFilter
-  onSelect: () => void; onOpen: () => void; onEdit: () => void; onForget: () => void
+  onSelect: (row: MemoryRecord) => void; onOpen: (row: MemoryRecord) => void; onEdit: (row: MemoryRecord) => void; onForget: (row: MemoryRecord) => void
   focusRef?: React.Ref<HTMLLIElement>
 }) {
   const { t } = useTranslation()
+  const onSelect = () => select(row)
+  const onOpen = () => openRow(row)
+  const onEdit = () => editRow(row)
+  const onForget = () => forgetRow(row)
   const body = memoryRecordBody(row)
   const title = recordTitle(row, body)
   const negative = row.kind === 'directive' ? lessonFacts(row).negative : undefined
@@ -330,7 +364,7 @@ export function RecordRow({ row, sort, meaning = false, selecting, selected, sel
     </div>
     {!phone && menu}
   </li>
-}
+})
 
 
 /** Words or Meaning: how the one search box reads what is typed in it. */

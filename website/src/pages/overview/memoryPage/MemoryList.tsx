@@ -6,7 +6,7 @@
  * The server does every filter, sort, search and count and sends one page at a
  * time; the next page loads as the end of the list scrolls near.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ListChecks, Replace, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
@@ -26,12 +26,12 @@ import Modal from '../../../components/Modal'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 import { fmtNumber } from '../../../i18n/format'
 import { queryReadFailed } from '../../../utils/queryReadFailed'
-import type { MemoryRecordFacetGroup, MemoryRecordQuery, MemoryRecordSort } from '../../../types/memoryEditing'
+import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordQuery, MemoryRecordSort } from '../../../types/memoryEditing'
 import { MEMORY_QUERY_PREFIXES, memoryQueryRetry } from '../MemoryStoreCard'
 import { errorText, recordIdentity } from '../memoryRecordParts'
 import { MANUAL_LIMIT, useMemoryRecordEdit, useMemoryRecordSelection } from '../useMemoryRecordEdit'
 import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
-import { ActiveFilters, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl } from './MemoryListParts'
+import { ActiveFilters, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, type ChipFilter } from './MemoryListParts'
 import { useMemoryTopics } from './memoryTopics'
 import { firstOfEach } from './memoryPaging'
 import { MemoryRecordDetail } from './MemoryRecordDetail'
@@ -149,8 +149,14 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     retry: memoryQueryRetry,
     placeholderData: previous => previous,
   })
-  // A previous answer's rows belong to another view and are not shown.
-  const searching = input.trim() !== view.q || records.isPending || records.isPlaceholderData
+  // A previous answer's rows belong to another view and are not shown, except
+  // while only the confidence range changed: that answer is the same list,
+  // narrower, so its rows stay (dimmed) until the new ones arrive.
+  const listKey = JSON.stringify([query.q, query.kind, Object.entries(query.filters || {}).filter(([key]) => key !== 'conf_min' && key !== 'conf_max'), sort, view.order, meaning, weak])
+  const shownKey = useRef<string | null>(null)
+  useEffect(() => { if (records.data && !records.isPlaceholderData) shownKey.current = listKey })
+  const narrowing = records.isPlaceholderData && !selecting && shownKey.current === listKey
+  const searching = input.trim() !== view.q || records.isPending || (records.isPlaceholderData && !narrowing)
   const pages = records.data?.pages
   // A write between two page reads can shift a row onto the next page too; it is shown once.
   const rows = useMemo(() => searching || records.error ? [] : firstOfEach((pages || []).flatMap(page => page.entries), recordIdentity), [searching, records.error, pages])
@@ -180,14 +186,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     const open = jump.open ? recordIdentity(jump.open) : null
     setDetailKey(open); setJumpFocus(open); focusScrolled.current = false
   }, [jump])
-  const focused = jumpFocus ? rows.find(row => recordIdentity(row) === jumpFocus) : landing ? rows.find(row => row.id === focusKey) : undefined
-  const focusRow = useRef<HTMLLIElement>(null)
   const focusScrolled = useRef(false)
-  useEffect(() => {
-    if (!focused || !focusRow.current || focusScrolled.current) return
-    focusRow.current.scrollIntoView({ block: 'center' })
-    focusScrolled.current = true
-  }, [focused])
 
   const selectedCount = picked.count
   const refresh = () => {
@@ -217,6 +216,9 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const locked = !!all
   const change = (next: Partial<ListView>) => { if (locked) return; setView(old => ({ ...old, ...next })) }
   const onToggleFilter = (group: MemoryRecordFacetGroup, value: string) => change({ filters: toggleFilter(view.filters, group, value) })
+  // Not a transition: a transition re-renders this component, and a query store
+  // changing during that render forces the whole batch, deferred rows included,
+  // into one blocking render. The rows' own deferral keeps this render small.
   const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => setView(old => { if (locked) return old; const filters = { ...old.filters }; if (value === undefined) delete filters[bound]; else filters[bound] = value; return { ...old, filters } })
   const clearFilters = () => change({ filters: {}, range: undefined })
   const setRange = (range?: DateRange) => change({ range })
@@ -229,9 +231,12 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const filterCount = activeFilterCount(filtersForKind(view.filters, view.kind))
   const filterPanel = <FilterPanel bot={botName} view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange} />
 
-  // Under a score sort, rows with no score come last, newest first; a divider marks where.
-  const scoreSort = sort === 'confidence' || sort === 'importance'
-  const firstUnscored = scoreSort ? rows.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
+  // The rows call their handlers through a ref, so they stay memoized across renders.
+  const rowActions = useRef<RowActions>({ toggle: picked.toggle, begin: edit.begin, onToggleFilter })
+  useLayoutEffect(() => { rowActions.current = { toggle: picked.toggle, begin: edit.begin, onToggleFilter } })
+  // The chips show only the ticked values, so a confidence change keeps the same chip object.
+  const chipKey = JSON.stringify(Object.entries(view.filters).filter(([key]) => key !== 'conf_min' && key !== 'conf_max'))
+  const rowChip = useMemo<ChipFilter | undefined>(() => locked || selecting ? undefined : { filters: Object.fromEntries(JSON.parse(chipKey)), onToggle: (group, value) => rowActions.current.onToggleFilter(group, value) }, [locked, selecting, chipKey])
   const toolbar = <div className="space-y-3">
     {selecting ? <div className="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2" role="toolbar" aria-label={t('memoryPage.selection_toolbar')}>
       {rows.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_page')} checked={rows.every(isSelected)} disabled={!!all && all.exclude.size >= MANUAL_LIMIT && rows.every(isSelected)} onChange={() => picked.choosePage(rows)} />{t('memoryEditing.select_page')}</label>}
@@ -292,29 +297,19 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       actions={queryReadFailed(counts) ? <button type="button" aria-disabled={counts.isFetching || undefined} onClick={() => { if (!counts.isFetching) void counts.refetch() }}>{t('memoryV2.retry_read')}</button> : undefined} />}
     {meaningUnavailable && <Btn className="min-h-11 w-fit" onClick={() => setMode('words')}>{t('memoryPage.search_words_instead')}</Btn>}
     {queryReadFailed(records) && <div className="flex flex-wrap gap-2"><Btn className="min-h-11 aria-disabled:cursor-default aria-disabled:opacity-30" aria-disabled={records.isFetching || undefined} onClick={() => { if (!records.isFetching) void records.refetch() }}>{t('memoryV2.retry_read')}</Btn>{onRecovery && <Btn className="min-h-11" onClick={onRecovery}>{t('memoryPage.open_recovery')}</Btn>}</div>}
-    {searching && !records.error && <ul role="status" aria-label={t('pages.overview.memoryTab.loading')} className="m-0 list-none divide-y divide-border rounded-2xl border border-border bg-card p-0">{[0, 1, 2].map(index => <li key={index} className="space-y-2 px-4 py-4"><Skeleton className="h-3.5 w-4/5 motion-reduce:animate-none" /><Skeleton className="h-4 w-1/2 motion-reduce:animate-none" /></li>)}</ul>}
     {!searching && !records.error && !rows.length && !weaker && <Card className="mb-0 py-6">
       <EmptyState icon={<Search className="lucide-inline" />} title={narrowed ? t('memoryV2.no_matches') : t(privateMemory ? 'memoryV2.empty_title' : 'memoryV2.store_empty_title')} subtitle={narrowed ? t('memoryV2.no_matches_hint') : t(privateMemory ? 'memoryV2.empty_body' : 'memoryV2.store_empty_body')} />
       <div className="mt-3 flex flex-wrap justify-center gap-2">{narrowed ? <>{view.q && <Btn className="min-h-11" onClick={clearSearch}>{t('memoryV2.clear_search')}</Btn>}{(activeFilterCount(view.filters) > 0 || !!view.range) && <Btn className="min-h-11" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn>}</> : emptyActions}</div>
     </Card>}
-    {(rows.length > 0 || weaker > 0) && <ul className="m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0" aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
-      {rows.map((row, index) => [
-        index === firstUnscored && index > 0 && view.kind === 'all' ? <li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li> : null,
-        <RecordRow key={recordIdentity(row)} row={row} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(row)} chip={locked || selecting ? undefined : { filters: view.filters, onToggle: onToggleFilter }}
-          selectDisabled={picked.lockedRow(row)}
-          open={detailKey === recordIdentity(row)} focus={row === focused} saved={row === focused && !jumpFocus} focusRef={row === focused ? focusRow : undefined}
-          onSelect={() => picked.toggle(row)} onOpen={() => setDetailKey(recordIdentity(row))}
-          onEdit={() => edit.begin({ type: 'set', row })} onForget={() => edit.begin({ type: 'forget', row })} />,
-      ])}
-      {/* Shown after the last page of strong matches, where the weaker ones would follow. */}
-      {weaker > 0 && !hasNextPage && <li className="flex min-h-[52px] items-center gap-2 bg-bg-hover px-4 text-[13px] text-muted sm:min-h-11">
+    {!records.error && <RecordList rows={rows} loading={searching} busy={narrowing} sort={sort} meaning={meaning} kind={view.kind} selecting={selecting} isSelected={isSelected} lockedRow={picked.lockedRow}
+      chip={rowChip} detailKey={detailKey} onOpen={setDetailKey} actions={rowActions} jumpFocus={jumpFocus} landingKey={landing ? focusKey : undefined} focusScrolled={focusScrolled}
+      footer={weaker > 0 && !hasNextPage ? <li className="flex min-h-[52px] items-center gap-2 bg-bg-hover px-4 text-[13px] text-muted sm:min-h-11">
         <span>{t('memoryPage.weaker_hidden', { count: fmtNumber(weaker) })}</span>
         <Btn className="ml-auto min-h-11 border-transparent text-accent sm:min-h-8" onClick={() => setWeak(true)}>{t('memoryPage.show_weaker')}</Btn>
-      </li>}
-    </ul>}
+      </li> : undefined} />}
     {/* Watched for the next page; it sits under the last row. */}
     {hasNextPage && !searching && <div ref={end} aria-hidden="true" className="h-px" />}
-    {isFetchingNextPage && <ul role="status" aria-label={t('pages.overview.memoryTab.loading')} className="m-0 list-none divide-y divide-border rounded-2xl border border-border bg-card p-0">{[0, 1].map(index => <li key={index} className="space-y-2 px-4 py-4"><Skeleton className="h-3.5 w-4/5 motion-reduce:animate-none" /><Skeleton className="h-4 w-1/2 motion-reduce:animate-none" /></li>)}</ul>}
+    {isFetchingNextPage && <LoadingRows count={2} />}
     {!searching && !records.error && total > PAGE_SIZE && <p className="text-[12px] tabular-nums text-muted">{t('memoryEditing.page_range', { from: fmtNumber(1), to: fmtNumber(rows.length), total: fmtNumber(total) })}</p>}
   </div>
 
@@ -333,8 +328,89 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>
     </div>}
-    {sheet && filtersOpen && <Modal open title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{filterPanel}</Modal>}
+    {/* No backdrop blur on a phone: the page behind re-renders while the sheet is open, and each re-render re-blurs it. */}
+    {sheet && filtersOpen && <Modal open backdropBlur={!phone} title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{filterPanel}</Modal>}
     {edit.dialog}
   </div>
 }
 
+
+type RowActions = { toggle: (row: MemoryRecord) => void; begin: ReturnType<typeof useMemoryRecordEdit>['begin']; onToggleFilter: (group: MemoryRecordFacetGroup, value: string) => void }
+
+function LoadingRows({ count }: { count: number }) {
+  const { t } = useTranslation()
+  return <ul role="status" aria-label={t('pages.overview.memoryTab.loading')} className="m-0 list-none divide-y divide-border rounded-2xl border border-border bg-card p-0">{Array.from({ length: count }, (_, index) => <li key={index} className="space-y-2 px-4 py-4"><Skeleton className="h-3.5 w-4/5 motion-reduce:animate-none" /><Skeleton className="h-4 w-1/2 motion-reduce:animate-none" /></li>)}</ul>
+}
+
+// A new list mounts this many rows at once, about a phone screen, and the next
+// batch each frame; the rows it replaces stay below until their places are rebuilt.
+const LIST_FIRST_ROWS = 8
+const LIST_STEP_ROWS = 8
+
+/**
+ * The list's rows. A new answer is built a few rows a frame, so one landing
+ * mid-drag never holds a frame; rows that did not change keep their place and
+ * skip rendering (RecordRow is memoized).
+ */
+function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selecting, isSelected, lockedRow, chip, detailKey, onOpen, actions, jumpFocus, landingKey, focusScrolled }: {
+  rows: MemoryRecord[]
+  /** A new list is on its way and the rows shown belong to another one. */
+  loading: boolean
+  /** The rows shown are the same list before a narrower answer lands. */
+  busy: boolean
+  footer?: ReactNode
+  sort: MemoryRecordSort; meaning: boolean; kind: KindTab; selecting: boolean
+  isSelected: (row: MemoryRecord) => boolean; lockedRow: (row: MemoryRecord) => boolean
+  chip?: ChipFilter; detailKey: string | null; onOpen: (key: string) => void
+  actions: MutableRefObject<RowActions>
+  /** The graph's pick, or a saved lesson's key, to mark and scroll to once. */
+  jumpFocus: string | null; landingKey?: string; focusScrolled: MutableRefObject<boolean>
+}) {
+  const { t } = useTranslation()
+  // `count` rows of `rows` are built; below them, the rest of the list it replaces.
+  // An empty list in between (a new search loading) leaves nothing to keep.
+  const [build, setBuild] = useState(() => ({ rows, count: Math.min(rows.length, LIST_FIRST_ROWS), prev: [] as MemoryRecord[] }))
+  const head = build.count >= build.rows.length ? build.rows : build.rows.slice(0, build.count)
+  const headKeys = head === build.rows ? null : new Set(head.map(recordIdentity))
+  const shown = headKeys ? [...head, ...build.prev.filter(row => !headKeys.has(recordIdentity(row)))] : head
+  if (build.rows !== rows) {
+    let same = 0
+    while (same < rows.length && rows[same] === shown[same]) same++
+    setBuild({ rows, count: Math.min(rows.length, Math.max(same, LIST_FIRST_ROWS)), prev: build.rows.length ? shown : [] })
+  }
+  const building = build.count < build.rows.length
+  useEffect(() => {
+    if (!building) return
+    const frame = requestAnimationFrame(() => setBuild(old => ({ ...old, count: old.count + LIST_STEP_ROWS })))
+    return () => cancelAnimationFrame(frame)
+  }, [building, build])
+  const focused = jumpFocus ? shown.find(row => recordIdentity(row) === jumpFocus) : landingKey ? shown.find(row => row.id === landingKey) : undefined
+  const focusRow = useRef<HTMLLIElement>(null)
+  useEffect(() => {
+    if (!focused || !focusRow.current || focusScrolled.current) return
+    focusRow.current.scrollIntoView({ block: 'center' })
+    focusScrolled.current = true
+  }, [focused, focusScrolled])
+  const onSelect = useCallback((row: MemoryRecord) => actions.current.toggle(row), [actions])
+  const onOpenRow = useCallback((row: MemoryRecord) => onOpen(recordIdentity(row)), [onOpen])
+  const onEdit = useCallback((row: MemoryRecord) => actions.current.begin({ type: 'set', row }), [actions])
+  const onForget = useCallback((row: MemoryRecord) => actions.current.begin({ type: 'forget', row }), [actions])
+  if (loading) return <LoadingRows count={3} />
+  // An empty answer shows the parent's empty state, not the old rows.
+  if (!rows.length && !footer) return null
+  // Under a score sort, rows with no score come last, newest first; a divider marks where.
+  const scoreSort = sort === 'confidence' || sort === 'importance'
+  const firstUnscored = scoreSort ? shown.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
+  const stale = busy || (building && build.prev.length > 0)
+  return <ul className={`m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0 transition-opacity ${stale ? 'opacity-60' : ''}`} aria-busy={stale || undefined} aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
+    {rows.length > 0 && shown.map((row, index) => [
+      index === firstUnscored && index > 0 && kind === 'all' ? <li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li> : null,
+      <RecordRow key={recordIdentity(row)} row={row} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(row)} chip={chip}
+        selectDisabled={lockedRow(row)}
+        open={detailKey === recordIdentity(row)} focus={row === focused} saved={row === focused && !jumpFocus} focusRef={row === focused ? focusRow : undefined}
+        onSelect={onSelect} onOpen={onOpenRow} onEdit={onEdit} onForget={onForget} />,
+    ])}
+    {/* Shown after the last page of strong matches, where the weaker ones would follow. */}
+    {footer}
+  </ul>
+}

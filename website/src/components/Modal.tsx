@@ -69,6 +69,10 @@ interface ModalProps {
    *  restore is `<body>`. Pass the menu's `openerRef` (`useMenuOpensDialog`);
    *  see `useDialogFocusTrap`'s `returnFocusTo`. */
   returnFocusTo?: React.RefObject<HTMLElement | null>
+  /** Blur the page behind the backdrop (default true). Off for a dialog whose
+   *  page re-renders while it is open on a phone: each re-render re-blurs the
+   *  whole backdrop and costs frames. */
+  backdropBlur?: boolean
   /** Modal content */
   children: React.ReactNode
 }
@@ -212,7 +216,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   return trustRoot ? <GuideTrustRootProvider>{dialog}</GuideTrustRootProvider> : dialog
 }
 
-export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
+export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', backdropBlur = true, ...rest }: ModalProps) {
   const top = layer === 'top'
   /** Backdrop + Escape only. Suppressed while the caller guards unsaved input
    *  and while every dismissal is refused. */
@@ -253,7 +257,8 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
       {open && (
         <>
           <motion.div
-            className={`fixed inset-0 bg-bg/60 backdrop-blur-md ${top ? 'z-[10000]' : 'z-[100]'}`}
+            data-testid="modal-backdrop"
+            className={`fixed inset-0 bg-bg/60 ${backdropBlur ? 'backdrop-blur-md' : ''} ${top ? 'z-[10000]' : 'z-[100]'}`}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}

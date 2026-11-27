@@ -70,6 +70,16 @@ describe('Modal — dialog semantics', () => {
     expect(withBody.querySelector('.overflow-y-auto')).not.toBeNull()
   })
 
+  it('blurs the backdrop by default and drops the blur only for a dialog that opts out', async () => {
+    const blurred = renderWithProviders(<Modal open onClose={() => {}} title="Default"><p>body</p></Modal>)
+    await screen.findByRole('dialog')
+    expect(screen.getByTestId('modal-backdrop')).toHaveClass('backdrop-blur-md')
+    blurred.unmount()
+    renderWithProviders(<Modal open onClose={() => {}} title="Plain" backdropBlur={false}><p>body</p></Modal>)
+    await screen.findByRole('dialog')
+    expect(screen.getByTestId('modal-backdrop')).not.toHaveClass('backdrop-blur-md')
+  })
+
   it('names the dialog from its own title, with no per-call-site opt-in', async () => {
     renderWithProviders(<Harness />)
     await openDialog()
