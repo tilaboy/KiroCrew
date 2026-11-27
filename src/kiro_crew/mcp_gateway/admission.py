@@ -90,6 +90,20 @@ def derive_spawn_gate_ceiling(configured_max: int, subagent_ceiling: int) -> int
     return max(configured, int(subagent_ceiling))
 
 
+def derive_resident_ceiling(configured_max: int, stubbed_servers: int) -> int:
+    """The pool's resident cap: ``mcp_gateway.max_backends``, raised to the
+    number of stubbed servers when that is higher.
+
+    Every stubbed server needs at least one pooled backend for any chat to use
+    it. With more stubbed servers than the cap (71 against the default 64 on a
+    real host), the servers past it were refused for capacity and their tools
+    were lost in every chat. Idle backends still drain after
+    ``idle_timeout_secs``, so the raised cap costs memory only while the servers
+    are in use.
+    """
+    return max(1, int(configured_max), int(stubbed_servers))
+
+
 #: How often a queued waiter's ``on_queued`` callback fires while it waits.
 #: This is the ``queued`` keepalive cadence a new stub renews its silence
 #: timer on; it must stay comfortably below the stub's 25 s silence window.

@@ -2229,7 +2229,10 @@ connection-private, mid-call respawn and prewarm -- through `_acquire_backend`:
 - **`BackendPool.reserve_resident_slot`** moves the `max_backends` check in
   front of the fork: a slot is claimed (or `PoolAtCapacity` raised with nothing
   to reap) before `spawn_backend`, and `add` consumes it. Private backends take
-  none.
+  none. The cap the broker puts on the daemon's argv is
+  `admission.derive_resident_ceiling`: `max_backends`, raised to the number of
+  stubbed servers when that is higher, because every stubbed server needs one
+  pooled backend and the ones past the cap lost their tools in every chat.
 
 Acquisition order inside `_acquire_backend`'s spawn closure -- after the per-key
 `_spawn_locks` dedup and after `CircuitBreaker.allow`, so a permit is never held

@@ -159,8 +159,12 @@ from kiro_crew.mcp_gateway.daemon.cli import (  # noqa: F401
     _default_cli_socket_path,
 )
 from kiro_crew.mcp_gateway.daemon.connection import (  # noqa: F401
+    _ERA_PROBE_METHOD,
+    _JSONRPC_METHOD_NOT_FOUND,
     REGISTERED_CAPABILITIES,
     _handle_connection,
+    _is_era_probe,
+    _method_not_found,
     _teardown_connection,
 )
 from kiro_crew.mcp_gateway.daemon.control import (  # noqa: F401
