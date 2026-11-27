@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 SOURCE_CREW = "crew"
 SOURCE_EDITION = "edition"
+SOURCE_LAUNCH = "launch"
 
 
 def edition_folder_free() -> frozenset[str]:
@@ -45,14 +46,23 @@ def folder_free_source(
     stored_answer: str | None = None,
     *,
     asked_roots: bool = False,
+    launch_free: bool = False,
 ) -> str | None:
-    """A fact that clears the question; roots or ``uses_cwd`` contradict the edition."""
+    """A fact that clears the question; roots or ``uses_cwd`` contradict every other fact.
+
+    *launch_free* (:meth:`FolderDeclarations.launch_free`) is Kiro Crew's own
+    reading of the declared launch: no arg or env value names the chat's folder.
+    It clears the question so sharing needs no answer, and a server that later
+    asks a chat for its roots is still kept per chat.
+    """
     if name in KIROCREW_BIN_MCP_SERVERS:
         return SOURCE_CREW
     if stored_answer == "uses_cwd" or asked_roots:
         return None
     if roots_observed(name, edition_folder_free() if edition is None else edition):
         return SOURCE_EDITION
+    if launch_free:
+        return SOURCE_LAUNCH
     return None
 
 
@@ -112,6 +122,40 @@ class FolderDeclarations:
     vault: set[str] = field(default_factory=set)
     launches: dict[str, set[str]] = field(default_factory=dict)
     complete: bool = True
+    #: Names declared with a command, and those whose args or env name the
+    #: chat's folder in some declaration (``change_card_mcp_server.detects_chat_folder``).
+    stdio: set[str] = field(default_factory=set)
+    folder_named: set[str] = field(default_factory=set)
+    #: Names switched off (``disabled: true``) in some declaration.
+    disabled: set[str] = field(default_factory=set)
+
+    def folder_users(
+        self,
+        names: Collection[str],
+        edition: frozenset[str],
+        answers: Mapping[str, str],
+        bindings: Mapping[str, str],
+    ) -> frozenset[str]:
+        """*names* that some declaration runs on the chat's folder, kept per chat.
+
+        A declared fact (Kiro Crew's own server, the edition's list) or a
+        ``not_used`` answer given for the current launch routes it anyway. An
+        unreadable source keeps the rewriter's name-wide rule.
+        """
+        if not self.complete:
+            return frozenset()
+        return frozenset(
+            name
+            for name in names
+            if roots_observed(name, self.folder_named)
+            and name not in KIROCREW_BIN_MCP_SERVERS
+            and not roots_observed(name, edition)
+            and effective_answer(name, answers, bindings, self.launch(name)) != "not_used"
+        )
+
+    def launch_free(self, name: str) -> bool:
+        """Whether every read declaration of *name* runs a command that names no folder."""
+        return self.complete and name in self.stdio and name not in self.folder_named
 
     def launch(self, name: str) -> str | None:
         from kiro_crew.mcp_gateway.launch_approval import serialize_identities
@@ -146,9 +190,11 @@ def read_declarations(source_dir: Path, mate_source_dir: Path | None = None) -> 
     """Read agent, settings and admitted crewmate declarations. BLOCKING, values discarded."""
     from kiro_crew.agent_discovery import read_agent_spec_strict
     from kiro_crew.agent_spec_format import iter_agent_spec_files_strict
+    from kiro_crew.change_card_mcp_server import detects_chat_folder
     from kiro_crew.mcp_gateway.hashing import hash_command
     from kiro_crew.mcp_gateway.mate_overlays import list_mate_sources, with_conductor_source
     from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+    from kiro_crew.mcp_provenance import is_withheld_mute
     from kiro_crew.user_json import loads_user_json
 
     facts = FolderDeclarations()
@@ -163,6 +209,14 @@ def read_declarations(source_dir: Path, mate_source_dir: Path | None = None) -> 
             if not binding:
                 if secret_reference_keys(entry.get("env")):
                     facts.vault.add(mcp_server_alias(name))
+                if entry.get("command"):
+                    facts.stdio.add(name)
+                    if detects_chat_folder(name, entry):
+                        facts.folder_named.add(name)
+                # The rebuild's own withhold of an unrouted ``secret://`` server
+                # is not the owner's off: routing is what lifts it.
+                if entry.get("disabled") is True and not is_withheld_mute(entry):
+                    facts.disabled.add(name)
                 continue
             command, args = entry.get("command"), entry.get("args")
             if isinstance(command, str) and command:

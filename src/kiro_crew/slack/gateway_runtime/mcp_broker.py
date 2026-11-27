@@ -122,6 +122,31 @@ def _schedule_paused_share_note(self: GatewayOrchestrator) -> None:
     task.add_done_callback(self._background_tasks.discard)
 
 
+async def _auto_share_mcp_servers(self: GatewayOrchestrator) -> None:
+    """Record the auto-share stubs and apply them to this running gateway.
+
+    A tracked task the boot starts once the dashboard socket is bound, so the
+    declaration scan is off the readiness path. New stubs are applied through
+    :func:`_apply_mcp_stub`, the same live path a Share press takes (a broker
+    start or restart, then the provider factory refresh), so new chats get them
+    with no gateway restart; chats that start before it lands run the servers
+    per chat. Best effort, like the pass itself (``mcp_gateway.auto_share``): a
+    failure keeps the configured stub set.
+    """
+    if not self._cfg.mcp_gateway.enabled:
+        return
+    from kiro_crew.mcp_gateway.auto_share import share_declared_servers
+
+    try:
+        if not await asyncio.to_thread(share_declared_servers):
+            return
+        await self._apply_mcp_stub()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 -- the next start reads the written stubs
+        logger.warning("mcp auto-share: could not apply the new stubs", exc_info=True)
+
+
 async def _init_mcp_gateway(
     self: GatewayOrchestrator, stub_servers: frozenset[str] | None = None
 ) -> None:
@@ -165,6 +190,10 @@ async def _init_mcp_gateway(
         # comes from agent-writable files, and gatewayd execs it outside
         # the sandbox. See ``mcp_gateway.launch_approval``.
         approvals = await asyncio.to_thread(load_approvals)
+        # Sharing has no approval step: this pass records every launch it
+        # admits, the first time it sees it and whenever it changes, so the
+        # store is the record of what ran (``LaunchApprovals.auto``).
+        approvals.auto = True
         # One gateway PATH part for this pass, later rebuilds and gatewayd, so
         # a live PATH change cannot make them fold a declared PATH differently.
         await asyncio.to_thread(pin_gateway_part)
