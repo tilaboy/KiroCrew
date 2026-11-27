@@ -6,7 +6,8 @@
  * The server does every filter, sort, search and count and sends one page at a
  * time; the next page loads as the end of the list scrolls near.
  */
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
+import { cloneElement, forwardRef, isValidElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type MutableRefObject, type ReactElement, type ReactNode, type Ref } from 'react'
+import { Virtuoso, type Components, type ContextProp, type ItemProps, type ListProps, type VirtuosoHandle } from 'react-virtuoso'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { ChevronDown, ListChecks, Replace, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
@@ -31,7 +32,7 @@ import { MEMORY_QUERY_PREFIXES, memoryQueryRetry } from '../MemoryStoreCard'
 import { errorText, recordIdentity } from '../memoryRecordParts'
 import { MANUAL_LIMIT, useMemoryRecordEdit, useMemoryRecordSelection } from '../useMemoryRecordEdit'
 import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, setConfidenceBound, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
-import { ActiveFilters, FIRST_ROWS, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, useFrameBudget, type ChipFilter } from './MemoryListParts'
+import { ActiveFilters, FIRST_ROWS, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, useFrameBudget, type ChipFilter, type VirtualItemAttrs } from './MemoryListParts'
 import { useMemoryTopics } from './memoryTopics'
 import { firstOfEach } from './memoryPaging'
 import { MemoryRecordDetail } from './MemoryRecordDetail'
@@ -443,43 +444,91 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
     while (same < rows.length && rows[same] === shown[same]) same++
     setBuild({ rows, count: build.rows.length ? same : Math.min(rows.length, FIRST_ROWS), prev: build.rows.length ? shown : [] })
   }
-  const building = build.count < build.rows.length
+  // The page's scroll container. With one, only the rows in and near view are
+  // mounted (react-virtuoso), so an answer replacing rows lays out a screenful,
+  // not the whole list. Without one (no layout, e.g. a test DOM) every row renders.
+  const hostRef = useRef<HTMLDivElement>(null)
+  const [scroller, setScroller] = useState<HTMLElement | null>(null)
+  useLayoutEffect(() => { setScroller(scrollParent(hostRef.current)) }, [])
+  const windowed = !!scroller
+  const building = !windowed && build.count < build.rows.length
   const nextBatch = useFrameBudget()
   useEffect(() => {
     if (!building) return
     const frame = requestAnimationFrame(time => { const add = nextBatch(time); setBuild(old => ({ ...old, count: old.count + add })) })
     return () => cancelAnimationFrame(frame)
   }, [building, build, nextBatch])
-  const focused = jumpFocus ? shown.find(row => recordIdentity(row) === jumpFocus) : landingKey ? shown.find(row => row.id === landingKey) : undefined
+  const listed = windowed ? rows : shown
+  const focused = jumpFocus ? listed.find(row => recordIdentity(row) === jumpFocus) : landingKey ? listed.find(row => row.id === landingKey) : undefined
   const focusRow = useRef<HTMLLIElement>(null)
+  const virtuoso = useRef<VirtuosoHandle>(null)
+  // Under a score sort, rows with no score come last, newest first; a divider marks where.
+  const scoreSort = sort === 'confidence' || sort === 'importance'
+  const firstUnscored = scoreSort ? listed.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
+  const divider = firstUnscored > 0 && kind === 'all'
   useEffect(() => {
-    if (!focused || !focusRow.current || focusScrolled.current) return
-    focusRow.current.scrollIntoView({ block: 'center' })
+    if (!focused || focusScrolled.current) return
+    if (windowed) {
+      // A windowed row may not be mounted yet: scroll the list to it by its place.
+      const index = listed.indexOf(focused)
+      virtuoso.current?.scrollToIndex({ index: index + (divider && index >= firstUnscored ? 1 : 0), align: 'center' })
+    } else if (focusRow.current) focusRow.current.scrollIntoView({ block: 'center' })
+    else return
     focusScrolled.current = true
-  }, [focused, focusScrolled])
+  }, [focused, focusScrolled, windowed, listed, divider, firstUnscored])
   const onSelect = useCallback((row: MemoryRecord) => actions.current.toggle(row), [actions])
   const onOpenRow = useCallback((row: MemoryRecord) => onOpen(recordIdentity(row)), [onOpen])
   const onEdit = useCallback((row: MemoryRecord) => actions.current.begin({ type: 'set', row }), [actions])
   const onForget = useCallback((row: MemoryRecord) => actions.current.begin({ type: 'forget', row }), [actions])
-  if (loading) return <LoadingRows count={3} />
-  // An empty answer shows the parent's empty state, not the old rows.
-  if (!rows.length && !footer) return null
-  // Under a score sort, rows with no score come last, newest first; a divider marks where.
-  const scoreSort = sort === 'confidence' || sort === 'importance'
-  const firstUnscored = scoreSort ? shown.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
+  // One flat list of items: the divider and the footer take places of their own.
+  const items = useMemo<ListItem[]>(() => {
+    if (!rows.length && !footer) return []
+    const out: ListItem[] = []
+    if (rows.length) listed.forEach((row, index) => { if (divider && index === firstUnscored) out.push('divider'); out.push(row) })
+    // Shown after the last page of strong matches, where the weaker ones would follow.
+    if (footer) out.push('footer')
+    return out
+  }, [rows.length, listed, divider, firstUnscored, footer])
+  const renderItem = (item: ListItem, attrs?: VirtualItemAttrs) => item === 'divider'
+    ? <li key="divider" {...attrs} className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li>
+    : item === 'footer' ? (isValidElement(footer) ? cloneElement(footer as ReactElement<VirtualItemAttrs>, { key: 'footer', ...attrs }) : null)
+    : <RecordRow key={recordIdentity(item)} {...attrs} row={item} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(item)} chip={chip}
+        selectDisabled={lockedRow(item)}
+        open={detailKey === recordIdentity(item)} focus={item === focused} saved={item === focused && !jumpFocus} focusRef={item === focused ? focusRow : undefined}
+        onSelect={onSelect} onOpen={onOpenRow} onEdit={onEdit} onForget={onForget} />
   const stale = busy || (building && build.prev.length > 0)
   // Contained, so a row mounting or changing restyles and lays out the list alone.
-  return <ul className={`m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0 transition-opacity [contain:content] ${stale ? 'opacity-60' : ''}`} aria-busy={stale || undefined} aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
-    {/* One flat keyed list: a nested [divider, row] pair would be keyed by its
-        place, so every row that moves would remount. */}
-    {rows.length > 0 && shown.flatMap((row, index) => [
-      ...(index === firstUnscored && index > 0 && kind === 'all' ? [<li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li>] : []),
-      <RecordRow key={recordIdentity(row)} row={row} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(row)} chip={chip}
-        selectDisabled={lockedRow(row)}
-        open={detailKey === recordIdentity(row)} focus={row === focused} saved={row === focused && !jumpFocus} focusRef={row === focused ? focusRow : undefined}
-        onSelect={onSelect} onOpen={onOpenRow} onEdit={onEdit} onForget={onForget} />,
-    ])}
-    {/* Shown after the last page of strong matches, where the weaker ones would follow. */}
-    {footer}
-  </ul>
+  const listProps = { className: `m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0 transition-opacity [contain:content] ${windowed ? '[&>li]:[content-visibility:visible]' : ''} ${stale ? 'opacity-60' : ''}`, 'aria-busy': stale || undefined, 'aria-live': 'polite' as const, 'aria-label': t('memoryV2.tab_memories') }
+  return <div ref={hostRef}>
+    {loading ? <LoadingRows count={3} />
+      : !items.length ? null
+      : scroller ? <Virtuoso<ListItem, ListContext> ref={virtuoso} customScrollParent={scroller} data={items} context={{ listProps }}
+          increaseViewportBy={VIEWPORT_MARGIN} components={VIRTUAL_COMPONENTS}
+          computeItemKey={(_index, item) => typeof item === 'string' ? item : recordIdentity(item)}
+          itemContent={(_index, item) => renderItem(item)} />
+      : <ul {...listProps}>{items.map(item => renderItem(item))}</ul>}
+  </div>
+}
+
+type ListItem = MemoryRecord | 'divider' | 'footer'
+type ListContext = { listProps: ComponentPropsWithoutRef<'ul'> }
+// Rows mounted beyond the view on each side, so Tab and a quick scroll reach rows that are already there.
+const VIEWPORT_MARGIN = { top: 600, bottom: 600 }
+// The list is the page's own <ul>; each item is the row's own <li>, given the
+// attributes the windowed list measures it by.
+const VIRTUAL_COMPONENTS: Components<ListItem, ListContext> = {
+  List: forwardRef<HTMLDivElement, ListProps & ContextProp<ListContext>>(function VirtualList({ style, children, context }, ref) {
+    return <ul ref={ref as unknown as Ref<HTMLUListElement>} {...context?.listProps} style={style}>{children}</ul>
+  }),
+  Item: ({ children, item: _item, context: _context, ...attrs }: ItemProps<ListItem> & ContextProp<ListContext>) =>
+    isValidElement(children) ? cloneElement(children as ReactElement<VirtualItemAttrs>, attrs) : null,
+}
+
+/** The nearest ancestor that scrolls vertically and has a height, or null. */
+function scrollParent(node: HTMLElement | null): HTMLElement | null {
+  for (let el = node?.parentElement; el; el = el.parentElement) {
+    const { overflowY } = getComputedStyle(el)
+    if ((overflowY === 'auto' || overflowY === 'scroll') && el.clientHeight > 0) return el
+  }
+  return null
 }
