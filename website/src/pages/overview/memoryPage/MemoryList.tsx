@@ -309,6 +309,8 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={stable.select}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
     </div></div>, [phone, inlineSwitch, view, input, sheet, railOpen, filterCount, stable, t])
   const topicsRow = useMemo(() => <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={stable.runTopic} onRemove={stable.removeTopic} onSave={stable.saveTopic} />, [topics.topics, view.q, meaning, stable])
+  // Built once, so the rail's memoized panel is not re-rendered for a new button element.
+  const railHide = useMemo(() => <IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => ui.current.setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>, [t])
   const toolbar = <div className="space-y-3">
     {selecting ? <div className="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2" role="toolbar" aria-label={t('memoryPage.selection_toolbar')}>
       {rows.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_page')} checked={rows.every(isSelected)} disabled={!!all && all.exclude.size >= MANUAL_LIMIT && rows.every(isSelected)} onChange={() => picked.choosePage(rows)} />{t('memoryEditing.select_page')}</label>}
@@ -370,7 +372,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
       {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
         <FilterPanel bot={botName} capped view={view} facets={facets} rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range}
-          trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
+          trailing={railHide} />
       </FilterRail>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>

@@ -214,7 +214,9 @@ export function useFrameBudget() {
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange, rangeReset }: {
+/** Memoized: it renders again only when its view, counts or handlers change, and a
+ *  confidence change re-renders the sliders while the value groups below keep theirs. */
+export const FilterPanel = memo(function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange, rangeReset }: {
   view: ListView; facets?: MemoryRecordFacets
   /** The bot this store belongs to, named in the (?) tips. */
   bot?: string
@@ -236,15 +238,15 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
   const toggleRef = useRef(onToggle)
   useLayoutEffect(() => { toggleRef.current = onToggle })
   const [handlers] = useState(() => new Map<string, () => void>())
-  const handler = (group: MemoryRecordFacetGroup, value: string) => {
+  const handler = useCallback((group: MemoryRecordFacetGroup, value: string) => {
     const key = `${group}\u0000${value}`
     let toggle = handlers.get(key)
     if (!toggle) { toggle = () => toggleRef.current(group, value); handlers.set(key, toggle) }
     return toggle
-  }
-  // The sheet mounts the rows a phone shows with the dialog, and the groups
-  // further down a frame budget at a time, so opening it never lays out every value at once.
-  const [budget, setBudget] = useState(capped ? Infinity : FIRST_ROWS)
+  }, [handlers])
+  // The sheet mounts with no value rows, then a frame budget of them each frame
+  // from the next one, so opening it never lays out the values in its first frame.
+  const [budget, setBudget] = useState(capped ? Infinity : 0)
   const nextBatch = useFrameBudget()
   // New counts render at transition priority, between frames: most values'
   // counts change on every filter change, and the ticks must not wait for them.
@@ -253,7 +255,10 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
   const high = view.filters.conf_max ?? 1
   // Sorting every group's values is the panel's main cost; each frame that
   // mounts more rows reuses it.
-  const { kind, filters } = view
+  // The groups read the ticked values only, so a confidence change leaves them as they are.
+  const { kind } = view
+  const facetKey = JSON.stringify(Object.entries(view.filters).filter(([key]) => key !== 'conf_min' && key !== 'conf_max'))
+  const filters = useMemo(() => Object.fromEntries(JSON.parse(facetKey)) as MemoryRecordFilters, [facetKey])
   const shown = useMemo(() => FACET_GROUPS.filter(group => kind === 'all' || GROUP_KINDS[group].includes(kind)).map(group => {
     const view = { filters }
     const counts = counted?.[group] || {}
@@ -270,8 +275,10 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
     const frame = requestAnimationFrame(time => { const add = nextBatch(time); setBudget(old => old + add) })
     return () => cancelAnimationFrame(frame)
   }, [budget, rowCount, nextBatch])
-  let left = budget
-  const mounted = shown.map(item => { const values = item.values.slice(0, Math.max(0, left)); left -= values.length; return { ...item, values } }).filter(item => item.values.length)
+  const mounted = useMemo(() => {
+    let left = budget
+    return shown.map(item => { const values = item.values.slice(0, Math.max(0, left)); left -= values.length; return { ...item, values } }).filter(item => item.values.length)
+  }, [shown, budget])
   // Layout and style contained: rows mounting into the panel do not restyle the page around it.
   return <div className="space-y-5 [contain:layout_style]">
     <div className="flex items-center">
@@ -289,17 +296,25 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
       </div>
     </section>}
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
-    {mounted.map(({ group, counts, ticked, values }) => {
-      const heading = view.kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
-      return <section key={group} aria-label={heading}>
-        <PanelSectionHeader label={heading} />
-        <GroupScroll capped={capped}>
-          {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={handler(group, value)} />)}
-        </GroupScroll>
-      </section>
-    })}
+    <FacetGroups mounted={mounted} kind={kind} capped={capped} bot={bot} handler={handler} />
   </div>
-}
+})
+
+type MountedGroup = { group: MemoryRecordFacetGroup; counts: Record<string, number>; ticked: string[]; values: string[] }
+
+/** The value groups, apart from the sliders so a confidence change skips them. */
+const FacetGroups = memo(function FacetGroups({ mounted, kind, capped, bot, handler }: { mounted: MountedGroup[]; kind: KindTab; capped: boolean; bot?: string; handler: (group: MemoryRecordFacetGroup, value: string) => () => void }) {
+  const { t } = useTranslation()
+  return <>{mounted.map(({ group, counts, ticked, values }) => {
+    const heading = kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
+    return <section key={group} aria-label={heading}>
+      <PanelSectionHeader label={heading} />
+      <GroupScroll capped={capped}>
+        {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={handler(group, value)} />)}
+      </GroupScroll>
+    </section>
+  })}</>
+})
 
 /** One removable chip per ticked filter value, and Clear all. */
 export const ActiveFilters = memo(function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
