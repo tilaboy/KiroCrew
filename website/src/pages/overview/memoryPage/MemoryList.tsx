@@ -31,7 +31,7 @@ import { MEMORY_QUERY_PREFIXES, memoryQueryRetry } from '../MemoryStoreCard'
 import { errorText, recordIdentity } from '../memoryRecordParts'
 import { MANUAL_LIMIT, useMemoryRecordEdit, useMemoryRecordSelection } from '../useMemoryRecordEdit'
 import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
-import { ActiveFilters, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, type ChipFilter } from './MemoryListParts'
+import { ActiveFilters, FIRST_ROWS, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, useFrameBudget, type ChipFilter } from './MemoryListParts'
 import { useMemoryTopics } from './memoryTopics'
 import { firstOfEach } from './memoryPaging'
 import { MemoryRecordDetail } from './MemoryRecordDetail'
@@ -85,7 +85,15 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     const timer = setTimeout(() => setView(old => ({ ...old, q: input.trim(), sort: input.trim() && !old.q ? 'match' : old.sort })), 250)
     return () => clearTimeout(timer)
   }, [input, view.q])
-  const [filtersOpen, setFiltersOpen] = useState(false)
+  // Rows show keys and scopes in the mono face, which loads on first use. Load it
+  // with the page: arriving later (a filter bringing the first keyed row into
+  // view) it lays out every row again in the middle of that interaction.
+  useEffect(() => {
+    const mono = getComputedStyle(document.documentElement).getPropertyValue('--mono').trim()
+    if (mono && document.fonts?.load) void document.fonts.load(`12px ${mono}`).catch(() => {})
+  }, [])
+  // The sheet holds its own open state, so opening it renders only the sheet.
+  const openSheet = useRef<() => void>(() => {})
   const [railOpen, setRailOpenState] = useState(() => safeGetItem(FILTERS_COLLAPSED_KEY) !== '1')
   const setRailOpen = (open: boolean) => { setRailOpenState(open); savePrefExplicitly(FILTERS_COLLAPSED_KEY, open ? '0' : '1') }
   const [railWidth, setRailWidth] = useState(() => { const saved = Number(safeGetItem(FILTERS_WIDTH_KEY)); return saved ? clampRail(saved) : RAIL_DEFAULT })
@@ -159,7 +167,19 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const searching = input.trim() !== view.q || records.isPending || (records.isPlaceholderData && !narrowing)
   const pages = records.data?.pages
   // A write between two page reads can shift a row onto the next page too; it is shown once.
-  const rows = useMemo(() => searching || records.error ? [] : firstOfEach((pages || []).flatMap(page => page.entries), recordIdentity), [searching, records.error, pages])
+  // A new answer brings new objects for records already listed; an unchanged
+  // record keeps its old object, so its memoized row does not render again.
+  const lastRows = useRef(new Map<string, MemoryRecord>())
+  const rows = useMemo(() => {
+    if (searching || records.error) return []
+    const known = lastRows.current
+    const next = firstOfEach((pages || []).flatMap(page => page.entries), recordIdentity).map(row => {
+      const old = known.get(recordIdentity(row))
+      return old && JSON.stringify(old) === JSON.stringify(row) ? old : row
+    })
+    lastRows.current = new Map(next.map(row => [recordIdentity(row), row]))
+    return next
+  }, [searching, records.error, pages])
   const facets = counts.data?.facets
   const total = pages?.[0]?.total || 0
   const weaker = meaning && !weak ? pages?.[pages.length - 1]?.hidden || 0 : 0
@@ -277,7 +297,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       {/* So does a toolbar too narrow for the switch inside the box, so it never sits on the text. */}
       {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={view.mode} onChange={setMode} /></div>}
       {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
-      {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={() => sheet ? setFiltersOpen(true) : setRailOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
+      {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={() => sheet ? openSheet.current() : setRailOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
       {/* Picking another order leaves the search by meaning, which only ranks by match. */}
       <DateRangeButton range={view.range} onChange={setRange} />
       <SortControl view={view} onChange={(next: MemoryRecordSort, order) => change({ sort: next, order, ...(meaning && next !== 'match' ? { mode: 'words' as const } : {}) })} />
@@ -328,12 +348,30 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>
     </div>}
-    {/* No backdrop blur on a phone: the page behind re-renders while the sheet is open, and each re-render re-blurs it. */}
-    {sheet && filtersOpen && <Modal open backdropBlur={!phone} title={t('memoryPage.filters')} onClose={() => setFiltersOpen(false)} headerActions={activeFilterCount(view.filters) > 0 ? <Btn className="min-h-11 border-transparent" onClick={clearFilters}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setFiltersOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{filterPanel}</Modal>}
+    {sheet && <FilterSheet openRef={openSheet} phone={phone} canClear={activeFilterCount(view.filters) > 0} onClear={clearFilters}>{filterPanel}</FilterSheet>}
     {edit.dialog}
   </div>
 }
 
+
+/** The Filters sheet on a narrow screen. It owns its open state: opening it
+ *  through `openRef` renders the sheet alone, not the page and list behind it. */
+function FilterSheet({ openRef, phone, canClear, onClear, children }: { openRef: MutableRefObject<() => void>; phone: boolean; canClear: boolean; onClear: () => void; children: ReactNode }) {
+  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  // The dialog shell paints first and its body a frame later, so the tap
+  // answers within one frame.
+  const [body, setBody] = useState(false)
+  useLayoutEffect(() => { openRef.current = () => setOpen(true) }, [openRef])
+  useEffect(() => {
+    if (!open) { setBody(false); return }
+    const frame = requestAnimationFrame(() => setBody(true))
+    return () => cancelAnimationFrame(frame)
+  }, [open])
+  if (!open) return null
+  // No backdrop blur on a phone: the page behind re-renders while the sheet is open, and each re-render re-blurs it.
+  return <Modal open backdropBlur={!phone} title={t('memoryPage.filters')} onClose={() => setOpen(false)} headerActions={canClear ? <Btn className="min-h-11 border-transparent" onClick={onClear}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{body ? children : <div className="min-h-[60vh]" />}</Modal>
+}
 
 type RowActions = { toggle: (row: MemoryRecord) => void; begin: ReturnType<typeof useMemoryRecordEdit>['begin']; onToggleFilter: (group: MemoryRecordFacetGroup, value: string) => void }
 
@@ -342,10 +380,6 @@ function LoadingRows({ count }: { count: number }) {
   return <ul role="status" aria-label={t('pages.overview.memoryTab.loading')} className="m-0 list-none divide-y divide-border rounded-2xl border border-border bg-card p-0">{Array.from({ length: count }, (_, index) => <li key={index} className="space-y-2 px-4 py-4"><Skeleton className="h-3.5 w-4/5 motion-reduce:animate-none" /><Skeleton className="h-4 w-1/2 motion-reduce:animate-none" /></li>)}</ul>
 }
 
-// A new list mounts this many rows at once, about a phone screen, and the next
-// batch each frame; the rows it replaces stay below until their places are rebuilt.
-const LIST_FIRST_ROWS = 8
-const LIST_STEP_ROWS = 8
 
 /**
  * The list's rows. A new answer is built a few rows a frame, so one landing
@@ -369,21 +403,24 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
   const { t } = useTranslation()
   // `count` rows of `rows` are built; below them, the rest of the list it replaces.
   // An empty list in between (a new search loading) leaves nothing to keep.
-  const [build, setBuild] = useState(() => ({ rows, count: Math.min(rows.length, LIST_FIRST_ROWS), prev: [] as MemoryRecord[] }))
+  // The first list mounts a screenful at once; a later answer keeps the rows it
+  // shares with the list on screen and mounts the rest a frame budget at a time.
+  const [build, setBuild] = useState(() => ({ rows, count: Math.min(rows.length, FIRST_ROWS), prev: [] as MemoryRecord[] }))
   const head = build.count >= build.rows.length ? build.rows : build.rows.slice(0, build.count)
   const headKeys = head === build.rows ? null : new Set(head.map(recordIdentity))
   const shown = headKeys ? [...head, ...build.prev.filter(row => !headKeys.has(recordIdentity(row)))] : head
   if (build.rows !== rows) {
     let same = 0
     while (same < rows.length && rows[same] === shown[same]) same++
-    setBuild({ rows, count: Math.min(rows.length, Math.max(same, LIST_FIRST_ROWS)), prev: build.rows.length ? shown : [] })
+    setBuild({ rows, count: build.rows.length ? same : Math.min(rows.length, FIRST_ROWS), prev: build.rows.length ? shown : [] })
   }
   const building = build.count < build.rows.length
+  const nextBatch = useFrameBudget()
   useEffect(() => {
     if (!building) return
-    const frame = requestAnimationFrame(() => setBuild(old => ({ ...old, count: old.count + LIST_STEP_ROWS })))
+    const frame = requestAnimationFrame(() => { const add = nextBatch(); setBuild(old => ({ ...old, count: old.count + add })) })
     return () => cancelAnimationFrame(frame)
-  }, [building, build])
+  }, [building, build, nextBatch])
   const focused = jumpFocus ? shown.find(row => recordIdentity(row) === jumpFocus) : landingKey ? shown.find(row => row.id === landingKey) : undefined
   const focusRow = useRef<HTMLLIElement>(null)
   useEffect(() => {
@@ -403,8 +440,10 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
   const firstUnscored = scoreSort ? shown.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
   const stale = busy || (building && build.prev.length > 0)
   return <ul className={`m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0 transition-opacity ${stale ? 'opacity-60' : ''}`} aria-busy={stale || undefined} aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
-    {rows.length > 0 && shown.map((row, index) => [
-      index === firstUnscored && index > 0 && kind === 'all' ? <li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li> : null,
+    {/* One flat keyed list: a nested [divider, row] pair would be keyed by its
+        place, so every row that moves would remount. */}
+    {rows.length > 0 && shown.flatMap((row, index) => [
+      ...(index === firstUnscored && index > 0 && kind === 'all' ? [<li key="divider" className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li>] : []),
       <RecordRow key={recordIdentity(row)} row={row} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(row)} chip={chip}
         selectDisabled={lockedRow(row)}
         open={detailKey === recordIdentity(row)} focus={row === focused} saved={row === focused && !jumpFocus} focusRef={row === focused ? focusRow : undefined}

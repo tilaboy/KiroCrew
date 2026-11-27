@@ -2,7 +2,7 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { memo, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import InfoTip from '../../../components/InfoTip'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
@@ -110,6 +110,9 @@ export function SortControl({ view, onChange }: { view: ListView; onChange: (sor
 /** One rail value: its checkbox, label and count. A `hint` adds a (?) after the
  *  label that explains it; the (?) sits outside the label, so pressing it, by
  *  mouse, key or touch, opens the tip and never ticks the box. */
+// The (?) does not change with the count, so a recount leaves it alone.
+const FacetTip = memo(InfoTip)
+
 // Memoized: a facet recount re-renders only the rows whose count or tick changed,
 // when the caller passes a stable `onToggle` (FilterPanel does).
 export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string; onToggle: () => void }) {
@@ -117,7 +120,7 @@ export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hin
   return <div data-facet-row className="grid min-h-11 items-center gap-x-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: `16px minmax(0,1fr)${hint ? ' auto' : ''} 48px` }}>
     <input id={id} type="checkbox" aria-label={label} className="h-4 w-4 cursor-pointer accent-accent" checked={on} onChange={onToggle} />
     <label htmlFor={id} className={`cursor-pointer break-words py-1 [overflow-wrap:anywhere] ${warn ? 'text-warn-text' : ''}`}>{label}</label>
-    {hint && <InfoTip text={hint} />}
+    {hint && <FacetTip text={hint} />}
     <label htmlFor={id} className="cursor-pointer text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</label>
   </div>
 })
@@ -165,10 +168,33 @@ function SettledSlider({ value, onSettle, ...rest }: Omit<ComponentProps<typeof 
   return <Slider {...rest} value={draft ?? value} onChange={next => { pending.current = next; setDraft(next) }} />
 }
 
-// The filter sheet's first commit holds this many value rows, about a phone
-// screen; each following frame adds the next batch.
-const SHEET_FIRST_ROWS = 8
-const SHEET_STEP_ROWS = 8
+/** Rows a first render mounts at once: about what a phone screen shows. */
+export const FIRST_ROWS = 8
+// Rendering time a growing list may take per frame, leaving the rest of the
+// 16.7 ms frame for style, layout and paint.
+const FRAME_BUDGET_MS = 6
+
+/** For a list that mounts over several frames: how many items the next frame
+ *  may add, from what the last batch cost to render and commit. */
+export function useFrameBudget() {
+  const cost = useRef({ start: 0, added: 0, perItem: 1 })
+  // Timed from this render, not from the frame callback: the render itself can
+  // run a task later, after the browser has painted that frame.
+  if (cost.current.added && !cost.current.start) cost.current.start = performance.now()
+  useLayoutEffect(() => {
+    const last = cost.current
+    if (!last.added) return
+    if (last.start) last.perItem = Math.max(0.05, (performance.now() - last.start) / last.added)
+    last.added = 0
+    last.start = 0
+  })
+  return useCallback(() => {
+    const last = cost.current
+    const add = Math.max(1, Math.floor(FRAME_BUDGET_MS / last.perItem))
+    last.added = add
+    return add
+  }, [])
+}
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
@@ -197,14 +223,18 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
     if (!toggle) { toggle = () => toggleRef.current(group, value); handlers.set(key, toggle) }
     return toggle
   }
-  // The sheet mounts its first rows with the dialog and the rest a frame at a
-  // time, so opening it never lays out every value in one frame.
-  const [budget, setBudget] = useState(capped ? Infinity : SHEET_FIRST_ROWS)
+  // The sheet mounts the rows a phone shows with the dialog, and the groups
+  // further down a frame budget at a time, so opening it never lays out every value at once.
+  const [budget, setBudget] = useState(capped ? Infinity : FIRST_ROWS)
+  const nextBatch = useFrameBudget()
   const groups = FACET_GROUPS.filter(group => view.kind === 'all' || GROUP_KINDS[group].includes(view.kind))
+  // New counts render at transition priority, between frames: most values'
+  // counts change on every filter change, and the ticks must not wait for them.
+  const counted = useDeferredValue(facets)
   const low = view.filters.conf_min ?? 0
   const high = view.filters.conf_max ?? 1
   const shown = groups.map(group => {
-    const counts = facets?.[group] || {}
+    const counts = counted?.[group] || {}
     const ticked = view.filters[group] || []
     // A ticked value stays listed even when the other filters leave it no rows.
     const values = [...new Set([...Object.keys(counts).filter(value => counts[value] > 0), ...ticked])]
@@ -215,9 +245,9 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
   const rowCount = shown.reduce((sum, item) => sum + item.values.length, 0)
   useEffect(() => {
     if (budget >= rowCount) return
-    const frame = requestAnimationFrame(() => setBudget(old => old + SHEET_STEP_ROWS))
+    const frame = requestAnimationFrame(() => { const add = nextBatch(); setBudget(old => old + add) })
     return () => cancelAnimationFrame(frame)
-  }, [budget, rowCount])
+  }, [budget, rowCount, nextBatch])
   let left = budget
   const mounted = shown.map(item => { const values = item.values.slice(0, Math.max(0, left)); left -= values.length; return { ...item, values } }).filter(item => item.values.length)
   return <div className="space-y-5">
