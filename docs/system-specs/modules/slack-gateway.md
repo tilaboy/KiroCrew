@@ -1043,6 +1043,42 @@ take the hold in `cli.main` after argument parsing.
   person who ran `kirocrew update` themselves is not shown the stale failure for ever. Nothing runs at shutdown (the desktop app
   signals the gateway on quit with a timeout), and a gateway the desktop app hosts
   (`KIROCREW_DESKTOP_GATEWAY`) skips the boot apply, because the desktop owns it.
+- **A headless Windows desktop install updates from its gateway** (decision entry
+  of 2026-11-26, `platform/desktop_installer_update.py`). The Windows desktop bundle
+  (`nsis` stamp) on Windows WITHOUT `KIROCREW_DESKTOP_GATEWAY` no longer defers:
+  `derive_capability` reports `managed_by: electron`, no `unavailable_reason`,
+  `can_apply: true` (false when `KIROCREW_CDN_BASE` overrides the source, which
+  `POST /api/update` then refuses with `409 host_approval_required`), and the check
+  (`updates_check._check_desktop_feed`) reads the app's own feed,
+  `<feed base>/feed/<channel>/latest.yml`, with the channel the app's
+  `resolveChannel` picks (nightly stays nightly, else the followed lane). The feed must
+  name exactly `<artifact base>/desktop/<channel>/<version>/<installer>` with one
+  well-formed sha512 and size. `auto_update_effect` is `notify`: only a person's
+  Update arms it. The boot apply, for an arm this version has not reached, stages
+  and verifies the installer in `<data home>/desktop-update/` (feed sha512 and size,
+  `Get-AuthenticodeSignature` `Valid`, an RFC 3161 timestamp, a signer in the app's
+  pinned `publisherName`, read from the `app-update.yml` that electron-builder writes
+  into the installed app's resources folder, strictly newer than the
+  running build, the armed version still the feed's, the install scope from the
+  uninstall entry's hive with an administrator for a per-machine one), copies every
+  memory store (`wheel_apply.snapshot_memory_before_update`; a copy that did not land
+  installs nothing, on every hand-off path, CLI included), records the
+  apply in `update_applying.json` from before the download (so a `kirocrew restart`
+  waiter waits out the download) and then the hand-off (`helper_pid`: the waiter
+  prints that the installer took over and exits 0, matching the record by pid or by
+  a write after it began), starts a detached PowerShell helper from an
+  `-EncodedCommand`, and exits before any listener binds. The helper waits for that
+  process and then for every process running from the install directory (300 s
+  bound), copies the installer into a fresh directory whose ACL admits only SYSTEM,
+  Administrators and this account, verifies the copy again, runs it `/S /allusers`
+  or `/S /currentuser`, checks the installed version in the uninstall entry, writes
+  `desktop_update_result.json`, and starts the gateway again with the same argv,
+  unless the installer outlived its 900 s bound, when the gateway is left stopped.
+  An insider feed may name stable's installer, which the publish lane mirrors there. The next start clears
+  the arm once the armed version runs, or turns the helper's failure into
+  `pending_apply_error`. `kirocrew update` there verifies now and arms (gateway
+  running) or hands off at once (none running), and exits 1 on any refusal; a
+  person's `kirocrew stop` installs an armed update and leaves the gateway stopped.
   `POST /api/restart` is the user restart that brings an armed update in: the
   boot after its re-exec applies it. It answers `409 work_in_flight` with the counts
   and the named holders for `{"force": false}` and restarts for the default and for `{"force": true}`. The UI asks in ONE place, the client wrapper in

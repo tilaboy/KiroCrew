@@ -913,6 +913,30 @@ no Windows backend: it prints that service management is supported only on
 systemd and launchd. A gateway started this way stops when you sign out or close
 its window, does not start at boot, and is not restarted if it exits.
 
+### Updating a gateway that runs without the desktop app
+
+A gateway started this way checks the same release feed the desktop app reads
+and offers the update in Settings > About and in `kirocrew update`. Nothing
+installs while it runs:
+
+- **From the dashboard:** choose Update, then Restart. The restart verifies the
+  signed installer (the feed's sha512, a valid Authenticode signature from the
+  publisher the app pins, and a version newer than the one running), stops the
+  gateway, installs the new version silently in the scope the app was installed
+  in (all users or just you), and starts the gateway again on the same port.
+  `kirocrew restart` returns as soon as the installer takes over; the gateway
+  answers again a few minutes later. Close other shells that run the bundled
+  `kirocrew.cmd` first: the install waits for them.
+- **From a shell:** run `kirocrew update` (the bundled shim). With the gateway
+  running it verifies the release and arms it for the next `kirocrew restart`;
+  with no gateway running it installs at once. `kirocrew stop` also installs an
+  armed update, and leaves the gateway stopped.
+
+An install made for all users needs the gateway to run as an administrator to
+update it. Any failed check leaves the old version in place: the dashboard
+shows the reason, `kirocrew update` exits non-zero, and the installer's own log
+is `desktop-update.log` in the data home.
+
 ## Troubleshooting
 
 - **The desktop app starts and exits within seconds, no window** — on a host
