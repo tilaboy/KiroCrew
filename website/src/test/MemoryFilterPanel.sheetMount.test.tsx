@@ -13,7 +13,8 @@ describe('FilterPanel sheet mounting', () => {
     renderWithProviders(<FilterPanel view={DEFAULT_VIEW} facets={{ tag: tags }} onToggle={onToggle} onRange={() => {}} />)
     // The first frame holds no value rows; they mount from the next frame on.
     expect(screen.queryAllByRole('checkbox')).toHaveLength(0)
-    await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(60))
+    // The rows mount on a per-frame time budget, so a busy test worker needs more frames.
+    await waitFor(() => expect(screen.getAllByRole('checkbox')).toHaveLength(60), { timeout: 5000 })
     fireEvent.click(screen.getByRole('checkbox', { name: '#tag59' }))
     expect(onToggle).toHaveBeenCalledWith('tag', 'tag59')
   })

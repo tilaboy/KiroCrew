@@ -2,6 +2,7 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
+import { useLanguageGeneration } from '../../../i18n/useLanguageGeneration'
 import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import InfoTip from '../../../components/InfoTip'
 import { useTranslation } from 'react-i18next'
@@ -50,6 +51,7 @@ const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'mem
 
 /** The kind pills, one row with live counts; a phone scrolls the row sideways. */
 export const KindPills = memo(function KindPills({ kind, counts, onChange, disabled, wrap = false, bot }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
   // A sideways row fades at each cut edge, so a pill past the edge still shows.
@@ -111,13 +113,17 @@ export function SortControl({ view, onChange }: { view: ListView; onChange: (sor
  *  label that explains it; the (?) sits outside the label, so pressing it, by
  *  mouse, key or touch, opens the tip and never ticks the box. */
 // The (?) does not change with the count, so a recount leaves it alone.
-const FacetTip = memo(InfoTip)
+const FacetTip = memo(function FacetTip(props: ComponentProps<typeof InfoTip>) {
+  useLanguageGeneration()
+  return <InfoTip {...props} />
+})
 
 // Memoized: a facet recount re-renders only the rows whose count or tick changed,
 // when the caller passes a stable `onToggle` (FilterPanel does).
 export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hint, tipReady = true, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string
   /** False on the frames that first mount the row: the (?) keeps its place and mounts after paint. */
   tipReady?: boolean; onToggle: () => void }) {
+  useLanguageGeneration()
   const id = useId()
   return <div data-facet-row className="grid min-h-11 items-center gap-x-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: `16px minmax(0,1fr)${hint ? ' auto' : ''} 48px` }}>
     <input id={id} type="checkbox" aria-label={label} className="h-4 w-4 cursor-pointer accent-accent" checked={on} onChange={onToggle} />
@@ -232,6 +238,7 @@ export const FilterPanel = memo(function FilterPanel({ view, facets, trailing, c
   /** Clamps the bound to the other one as it is when applied (setConfidenceBound). */
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const [find, setFind] = useState('')
   const needle = find.trim().toLocaleLowerCase()
@@ -314,6 +321,7 @@ type MountedGroup = { group: MemoryRecordFacetGroup; counts: Record<string, numb
 
 /** The value groups, apart from the sliders so a confidence change skips them. */
 const FacetGroups = memo(function FacetGroups({ mounted, kind, capped, bot, handler, tipsReady }: { mounted: MountedGroup[]; kind: KindTab; capped: boolean; bot?: string; handler: (group: MemoryRecordFacetGroup, value: string) => () => void; tipsReady: boolean }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   return <>{mounted.map(({ group, counts, ticked, values }) => {
     const heading = kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
@@ -330,6 +338,7 @@ const FacetGroups = memo(function FacetGroups({ mounted, kind, capped, bot, hand
 export const ActiveFilters = memo(function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
   /** The date range, and the time it filters on. */
   range?: DateRange; rangeField?: 'updated' | 'created'; onClearRange?: () => void }) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const chips = FACET_GROUPS.flatMap(group => (filters[group] || []).map(value => ({ key: `${group}:${value}`, label: facetLabel(group, value), remove: () => onToggle(group, value) })))
   // A graph selection is one chip: removing it brings the whole list back.
@@ -407,6 +416,7 @@ export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, s
   onSelect: (row: MemoryRecord) => void; onOpen: (row: MemoryRecord) => void; onEdit: (row: MemoryRecord) => void; onForget: (row: MemoryRecord) => void
   focusRef?: React.Ref<HTMLLIElement>
 } & VirtualItemAttrs) {
+  useLanguageGeneration()
   const { t } = useTranslation()
   const onSelect = () => select(row)
   const onOpen = () => openRow(row)
