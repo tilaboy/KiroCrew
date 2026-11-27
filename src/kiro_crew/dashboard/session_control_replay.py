@@ -1,9 +1,10 @@
-"""One answer per ``request_id`` for ``session_send`` and ``session_create``.
+"""One answer per ``request_id`` for the session-control routes that open or deliver.
 
-A slow gateway can take longer than the MCP client waits. The client then reports a
-lost reply (``transport_error``) while the route goes on to deliver the message or
-open the session, so a caller that retries sends the message twice or leaves an
-empty session behind. The ``session_send`` and ``session_create`` tools therefore
+Those are send, create (both also with ``crew``), fork, broadcast, continue and
+set-note. A slow gateway can take longer than the MCP client waits. The client then
+reports a lost reply (``transport_error``) while the route goes on to deliver the
+message or open the session, so a caller that retries sends the message twice or
+leaves an empty session behind. The tools for these routes therefore
 mint one ``request_id`` per call and, when the reply is lost, send the SAME request
 again. :func:`once` makes that second request answer with the first one's reply
 instead of doing the work again:
@@ -61,8 +62,10 @@ REPLAY_REPLAYED = "replayed"
 _REQUEST_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 #: Seconds a finished reply stays available to a resend. Well past the client's
-#: whole retry window (``mcp_dashboard_session_runs.LOST_REPLY_ATTEMPTS`` posts of
-#: up to 30 s each), so a resend never finds its reply already gone.
+#: whole retry window (``mcp_session_once.LOST_REPLY_ATTEMPTS`` posts of up to 30 s
+#: each; a broadcast's last resend starts about 520 s after its first post, which
+#: the gateway finishes within its own 250 s bound), so a resend never finds its
+#: reply already gone.
 REPLAY_TTL_SECS = 600.0
 
 #: Most replies kept at once, running or finished, across every caller.
