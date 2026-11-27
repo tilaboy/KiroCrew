@@ -154,9 +154,12 @@ export const RANGE_SETTLE_MS = 250
 /** A slider that shows each step at once but reports only the value it rests on,
  *  so a drag or a run of arrow keys reloads the list once. A value still pending
  *  when the sheet closes is reported then. */
-function SettledSlider({ value, onSettle, ...rest }: Omit<ComponentProps<typeof Slider>, 'onChange'> & { onSettle: (value: number) => void }) {
+function SettledSlider({ value, onSettle, resetKey, ...rest }: Omit<ComponentProps<typeof Slider>, 'onChange'> & { onSettle: (value: number) => void; resetKey?: number }) {
   const [draft, setDraft] = useState<number | null>(null)
   const pending = useRef<number | null>(null)
+  // The range was cleared (Clear all, its chip): a value still pending is dropped, not applied after.
+  const [seenReset, setSeenReset] = useState(resetKey)
+  if (seenReset !== resetKey) { setSeenReset(resetKey); pending.current = null; setDraft(null) }
   const settle = useRef(onSettle)
   settle.current = onSettle
   useEffect(() => {
@@ -211,7 +214,7 @@ export function useFrameBudget() {
 
 /** The filter groups with live counts from `facets=1`, and the confidence range.
  *  A box at the top narrows every group's values by label. */
-export function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange }: {
+export function FilterPanel({ view, facets, trailing, capped = false, bot, onToggle, onRange, rangeReset }: {
   view: ListView; facets?: MemoryRecordFacets
   /** The bot this store belongs to, named in the (?) tips. */
   bot?: string
@@ -220,6 +223,9 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
   /** The wide rail: each group scrolls inside 16 rows. */
   capped?: boolean
   onToggle: (group: MemoryRecordFacetGroup, value: string) => void
+  /** Each Clear all or chip removal changes it, dropping a slider value still settling. */
+  rangeReset?: number
+  /** Clamps the bound to the other one as it is when applied (setConfidenceBound). */
   onRange: (bound: 'conf_min' | 'conf_max', value: number | undefined) => void
 }) {
   const { t } = useTranslation()
@@ -278,8 +284,8 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
     {view.kind !== 'episode' && !needle && <section aria-label={t('memoryPage.facet_confidence')}>
       <PanelSectionHeader label={view.kind === 'all' ? t('memoryPage.for_facts_lessons', { group: t('memoryPage.facet_confidence') }) : t('memoryPage.facet_confidence')} />
       <div className="space-y-3 pt-1">
-        <SettledSlider label={t('memoryPage.conf_lowest')} showValue min={0} max={1} step={0.05} value={low} formatValue={fmtScore} onSettle={value => onRange('conf_min', value > 0 ? Math.min(value, high) : undefined)} />
-        <SettledSlider label={t('memoryPage.conf_highest')} showValue min={0} max={1} step={0.05} value={high} formatValue={fmtScore} onSettle={value => onRange('conf_max', value < 1 ? Math.max(value, low) : undefined)} />
+        <SettledSlider label={t('memoryPage.conf_lowest')} showValue min={0} max={1} step={0.05} value={low} formatValue={fmtScore} resetKey={rangeReset} onSettle={value => onRange('conf_min', value)} />
+        <SettledSlider label={t('memoryPage.conf_highest')} showValue min={0} max={1} step={0.05} value={high} formatValue={fmtScore} resetKey={rangeReset} onSettle={value => onRange('conf_max', value)} />
       </div>
     </section>}
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}

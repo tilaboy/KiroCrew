@@ -30,7 +30,7 @@ import type { MemoryRecord, MemoryRecordFacetGroup, MemoryRecordQuery, MemoryRec
 import { MEMORY_QUERY_PREFIXES, memoryQueryRetry } from '../MemoryStoreCard'
 import { errorText, recordIdentity } from '../memoryRecordParts'
 import { MANUAL_LIMIT, useMemoryRecordEdit, useMemoryRecordSelection } from '../useMemoryRecordEdit'
-import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
+import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, setConfidenceBound, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
 import { ActiveFilters, FIRST_ROWS, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, useFrameBudget, type ChipFilter } from './MemoryListParts'
 import { useMemoryTopics } from './memoryTopics'
 import { firstOfEach } from './memoryPaging'
@@ -239,8 +239,11 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   // Not a transition: a transition re-renders this component, and a query store
   // changing during that render forces the whole batch, deferred rows included,
   // into one blocking render. The rows' own deferral keeps this render small.
-  const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => setView(old => { if (locked) return old; const filters = { ...old.filters }; if (value === undefined) delete filters[bound]; else filters[bound] = value; return { ...old, filters } })
-  const clearFilters = () => change({ filters: {}, range: undefined })
+  // Clamped against the other bound inside the update, as it is at that moment.
+  const onRange = (bound: 'conf_min' | 'conf_max', value: number | undefined) => setView(old => locked ? old : { ...old, filters: setConfidenceBound(old.filters, bound, value) })
+  // Bumped by every clear of the range, so a slider value still settling is dropped.
+  const [rangeReset, setRangeReset] = useState(0)
+  const clearFilters = () => { setRangeReset(n => n + 1); change({ filters: {}, range: undefined }) }
   const setRange = (range?: DateRange) => change({ range })
   const clearSearch = () => { setInput(''); change({ q: '', sort: view.sort === 'match' ? 'updated' : view.sort }) }
   const setMode = (mode: SearchMode) => change({ mode })
@@ -272,6 +275,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     sort: (next: MemoryRecordSort, order: 'asc' | 'desc') => ui.current.change({ sort: next, order, ...(ui.current.meaning && next !== 'match' ? { mode: 'words' as const } : {}) }),
     toggle: (group: MemoryRecordFacetGroup, value: string) => ui.current.onToggleFilter(group, value),
     range: (bound: 'conf_min' | 'conf_max', value: number | undefined) => ui.current.onRange(bound, value),
+    clearConfidence: (bound: 'conf_min' | 'conf_max') => { setRangeReset(n => n + 1); ui.current.onRange(bound, undefined) },
     clear: () => ui.current.clearFilters(),
     clearRefs: () => { setJumpFocus(null); ui.current.change({ filters: Object.fromEntries(Object.entries(ui.current.view.filters).filter(([key]) => key !== 'ref')) }) },
     filters: () => ui.current.sheet ? openSheet.current() : ui.current.setRailOpen(true),
@@ -328,7 +332,7 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     </div> : searchRow}
     {!selecting && topicsRow}
     <KindPills bot={botName} wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={stable.setKind} />
-    <ActiveFilters range={view.range} rangeField={dateField} onClearRange={stable.clearRange} filters={shownFilters} onToggle={stable.toggle} onRange={stable.range} onClear={stable.clear} onClearRefs={stable.clearRefs} />
+    <ActiveFilters range={view.range} rangeField={dateField} onClearRange={stable.clearRange} filters={shownFilters} onToggle={stable.toggle} onRange={stable.clearConfidence} onClear={stable.clear} onClearRefs={stable.clearRefs} />
   </div>
 
   const list = <div className="space-y-3">
@@ -365,13 +369,13 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     {stacked ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
       {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
       {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
-        <FilterPanel bot={botName} capped view={view} facets={facets} onToggle={stable.toggle} onRange={stable.range}
+        <FilterPanel bot={botName} capped view={view} facets={facets} rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range}
           trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
       </FilterRail>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>
     </div>}
-    {sheet && <FilterSheet openRef={openSheet} phone={phone} canClear={activeFilterCount(view.filters) > 0} onClear={stable.clear}><FilterPanel bot={botName} view={view} facets={facets} onToggle={stable.toggle} onRange={stable.range} /></FilterSheet>}
+    {sheet && <FilterSheet openRef={openSheet} phone={phone} canClear={activeFilterCount(view.filters) > 0} onClear={stable.clear}><FilterPanel bot={botName} view={view} facets={facets} rangeReset={rangeReset} onToggle={stable.toggle} onRange={stable.range} /></FilterSheet>}
     {edit.dialog}
   </div>
 }
