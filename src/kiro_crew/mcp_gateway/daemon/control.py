@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from kiro_crew import platform_compat
 from kiro_crew.code_fingerprint import code_fingerprint
 from kiro_crew.env import pinned_gateway_spec_path
-from kiro_crew.mcp_gateway import socketsec
+from kiro_crew.mcp_gateway import folder_scope, socketsec
 from kiro_crew.mcp_gateway.admission import Admission
 from kiro_crew.mcp_gateway.daemon import identity as _identity
 from kiro_crew.mcp_gateway.daemon import logger
@@ -257,6 +257,9 @@ async def _apply_claim(
     raw_token = frame.get("pid_start_id")
     claim_token = raw_token if isinstance(raw_token, str) else None
     _bind_token(session_token, updated_caller, pid, claim_token)
+    # The session's own folder, Crew-authored on the claim (never the register
+    # frame). A shared backend scopes this caller's relative paths to it.
+    folder_scope.record_session_folder(updated_caller.session_key, frame.get("work_dir"))
     # Does this runtime host more than one ACP session RIGHT NOW? The claiming
     # session is unioned in because its own stubs may not have registered yet --
     # a claim is pushed before they launch -- so the live index alone would miss

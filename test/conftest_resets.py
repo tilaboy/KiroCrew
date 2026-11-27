@@ -1300,6 +1300,27 @@ def _reset_builtin_discovery_scan():
 
 
 @per_test_guard
+def _reset_mcp_folder_scope_folders():
+    """Start each test with no chat folders recorded by the MCP gateway.
+
+    ``mcp_gateway.folder_scope`` keeps each session's folder from its claim
+    frame. Tests reuse session keys with their own ``tmp_path`` folders, so a
+    folder one test left would scope the next test's calls to the wrong place.
+    """
+
+    def clear():
+        module = sys.modules.get("kiro_crew.mcp_gateway.folder_scope")
+        if module is not None:
+            module.forget_session_folders()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
+
+
+@per_test_guard
 def _reset_subagent_not_due_memo():
     """Start each test with no remembered not-yet-due runs from the tombstone sweep.
 

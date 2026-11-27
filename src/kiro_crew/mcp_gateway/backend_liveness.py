@@ -214,6 +214,10 @@ async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
     closing. Preserves the existing correlation between in-flight ids
     and stubs: each pending request gets its own error reply.
     """
+    from kiro_crew.mcp_gateway import (
+        backend_caller_scope as _scope_hooks,  # lazy: the facade binds no new name
+    )
+
     # Idempotent: reachable near-simultaneously from the stdout-pump
     # finally, _heartbeat_once, _fail_oversize_request and the init-fail
     # paths. Without this guard each invocation snapshots pending/init and
@@ -293,6 +297,9 @@ async def _broadcast_backend_gone(self: Backend, reason: str) -> None:
         ):
             self._gone_replay_uris.setdefault(pending.replay_stub, set()).add(pending.resource_uri)
     self._pending_requests.clear()
+    gate = _scope_hooks.state(self).call_gate
+    if gate is not None:
+        gate.fail_all()
     self._init_pending.clear()
     # Parked lease work is NOT in ``_pending_requests``: a rider waiting
     # on an in-flight grant, a replacement subscribe parked behind a
