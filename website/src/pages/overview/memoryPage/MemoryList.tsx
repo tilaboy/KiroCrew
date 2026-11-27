@@ -34,7 +34,7 @@ import { MANUAL_LIMIT, useMemoryRecordEdit, useMemoryRecordSelection } from '../
 import { activeFilterCount, byMeaning, effectiveSort, filtersForKind, loadView, saveView, setConfidenceBound, toggleFilter, type KindTab, type ListView, type SearchMode } from './memoryListView'
 import { ActiveFilters, FIRST_ROWS, FilterPanel, KindPills, RecordRow, SavedTopics, SearchModeSwitch, SortControl, useFrameBudget, type ChipFilter, type VirtualItemAttrs } from './MemoryListParts'
 import { useMemoryTopics } from './memoryTopics'
-import { createListStore, useListStore, type ListAnswer, type ListStore } from './memoryListStore'
+import { createListStore, EMPTY_ANSWER, useListStore, type ListAnswer, type ListStore } from './memoryListStore'
 import { firstOfEach } from './memoryPaging'
 import { MemoryRecordDetail } from './MemoryRecordDetail'
 
@@ -373,6 +373,11 @@ function MemoryQueries({ list, store, typing, selecting, onQueryChange }: {
     facets: counts.data?.facets,
     countsError: counts.error, countsFetching: counts.isFetching, countsFailed: queryReadFailed(counts),
   }
+  // A list that opens on cached answers shows them in its first frame: the store
+  // takes the answer during this first render, before the parts after it read the
+  // store, and nothing has subscribed yet to be told. Without a cached answer the
+  // loading rows stay until one arrives.
+  if (list.get().answer === EMPTY_ANSWER && !searching) list.setAnswer(answer)
   // Published before paint, so the parts that read it show it in this same frame.
   useLayoutEffect(() => {
     list.setActions({ refetchRecords: () => void refetchRecords(), refetchCounts: () => void refetchCounts(), fetchNextPage: () => void fetchNextPage() })
