@@ -683,8 +683,15 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     answers = getattr(gw_cfg, "cwd_use", None) or {}
     bindings = getattr(gw_cfg, "cwd_use_launch", None) or {}
     observed_roots = frozenset(n for n in observed if folder_use.asks_for_roots(observed, n))
-    roots_excluded = declarations.per_chat(
-        rows.keys(), observed_roots, folder_free, answers, bindings
+    # Which servers get one backend per project, read as the rewriter reads it.
+    # The operator's "Don't share" is reported apart, as ``declined``.
+    routing = folder_use.ProjectRouting(
+        edition=folder_free,
+        answers=dict(answers),
+        bindings=dict(bindings),
+        observed_roots=observed_roots,
+        dont_share=frozenset(),
+        declarations=declarations,
     )
 
     result: list[dict[str, Any]] = []
@@ -697,9 +704,10 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
         # operator's choice. The UI needs both — one disables the control, the
         # other sets it — and collapsing them would make an unstubbable server
         # look like one the operator declined.
-        asked_roots = name in roots_excluded
-        answer = folder_use.effective_answer(name, answers, bindings, declarations.launch(name))
-        can_stub = is_stdio and not denylisted and not asked_roots
+        can_stub = is_stdio and not denylisted
+        # Shared by chats of one project, inside their sandbox, with no approval.
+        # Its row's control is "Don't share" rather than the Share press.
+        per_project = can_stub and routing.per_project(name)
         # ``stub_servers`` is the only thing that produces a stub, so it is the
         # only thing this row may report. ``entry_poolable`` is still returned
         # below as information — a spec-level ``poolable: true`` does not opt a
@@ -759,16 +767,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                 # on page-wide never re-enables it (it only enables servers
                 # nobody chose for).
                 "declined": (getattr(gw_cfg, "stub_overrides", None) or {}).get(name) is False,
-                # A mixed roots observation keeps the question and approval path.
-                "cwd_use": answer,
-                "cwd_proven": folder_use.folder_free_source(
-                    name,
-                    folder_free,
-                    answer,
-                    asked_roots=folder_use.roots_observed(name, observed_roots),
-                )
-                is not None,
-                "cwd_roots": asked_roots,
+                "per_project": per_project,
                 "entry_poolable": row["entry_poolable"],
                 "pooling_blocked_by_env": pooling_blocked,
                 "pooling_blocked_by_env_when_shared": nothing_shared,
@@ -802,8 +801,6 @@ def mcp_sharing_can_turn_on() -> bool:
     turning sharing on would mark. Keep the two in step; a pointer at a switch that
     stays disabled is a dead end. Never raises: an unreadable reading answers False.
     """
-    from kiro_crew.config.integration_sections import effective_cwd_answer
-    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
     from kiro_crew.mcp_gateway.rewriter import UNPOOLABLE_SERVERS
 
     try:
@@ -814,22 +811,16 @@ def mcp_sharing_can_turn_on() -> bool:
         if stub_set:
             return True
         overrides = getattr(gw_cfg, "stub_overrides", None) or {}
-        cwd_use = getattr(gw_cfg, "cwd_use", None) or {}
-        cwd_launch = getattr(gw_cfg, "cwd_use_launch", None) or {}
         refused = refused_servers()
-        for name, row in _collect_server_rows().items():
-            if row["transport"] != "stdio" or name in UNPOOLABLE_SERVERS:
-                continue
-            if overrides.get(name) is False or name in refused:
-                continue
-            answer = effective_cwd_answer(
-                cwd_use.get(name), cwd_launch.get(name), declared_launch(row)
-            )
-            # ``needsCwdAnswer``: only Kiro Crew's own servers, or an explicit
-            # ``not_used``, share without asking about the project's files.
-            if name in KIROCREW_BIN_MCP_SERVERS or answer == "not_used":
-                return True
-        return False
+        # Every other stdio server shares once sharing is on: one copy for all
+        # chats, or one per project for a server not known to be folder-free.
+        return any(
+            row["transport"] == "stdio"
+            and name not in UNPOOLABLE_SERVERS
+            and overrides.get(name) is not False
+            and name not in refused
+            for name, row in _collect_server_rows().items()
+        )
     except Exception:  # noqa: BLE001 - a reading that fails offers no pointer
         logger.debug("could not read whether MCP sharing can be turned on", exc_info=True)
         return False

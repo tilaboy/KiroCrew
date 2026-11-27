@@ -127,9 +127,7 @@ def build_claim_frame(
         "caller": {
             "session_key": session_key,
             "session_type": classify_session_type(session_key),
-            "principal_id": os.environ.get("USER")
-            or os.environ.get("USERNAME")
-            or "",
+            "principal_id": os.environ.get("USER") or os.environ.get("USERNAME") or "",
             "channel_id": channel_id or "",
         },
     }
@@ -168,7 +166,9 @@ async def _send_claim_inner(
         if kind == "claimed":
             logger.info(
                 "claim-push acknowledged: pid=%d session_key=%s updated=%s",
-                pid, session_key, resp.get("updated"),
+                pid,
+                session_key,
+                resp.get("updated"),
             )
             return True
         if kind == "claim-noop":
@@ -185,12 +185,15 @@ async def _send_claim_inner(
                 "claim-push pending: pid=%d session_key=%s matched no stub "
                 "connection yet; gatewayd keeps the session token binding for "
                 "the stubs that register next",
-                pid, session_key,
+                pid,
+                session_key,
             )
             return False
         logger.warning(
             "claim-push not acknowledged: pid=%d session_key=%s resp=%r",
-            pid, session_key, resp,
+            pid,
+            session_key,
+            resp,
         )
         return False
     finally:
@@ -231,15 +234,121 @@ async def send_claim(
     """
     try:
         return await asyncio.wait_for(
-            _send_claim_inner(
-                socket_path, pid, session_key, channel_id, stub_session_token
-            ),
+            _send_claim_inner(socket_path, pid, session_key, channel_id, stub_session_token),
             timeout=_CLAIM_TIMEOUT_SECS,
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
         logger.warning(
-            "claim-push failed (recaller fallback still applies): pid=%d "
-            "session_key=%s: %s", pid, session_key, exc,
+            "claim-push failed (recaller fallback still applies): pid=%d " "session_key=%s: %s",
+            pid,
+            session_key,
+            exc,
+        )
+        return False
+
+
+def project_root(work_dir: str) -> str:
+    """The git toplevel holding *work_dir*, or *work_dir* itself when none does. BLOCKING.
+
+    A ``.git`` file counts as well as a directory, so a worktree is its own
+    project.
+    shortcut: a repository at the home directory (a dotfiles checkout) makes the
+    home the root of every folder below it; stop the walk at the home if users
+    hit that.
+    """
+    start = os.path.abspath(work_dir)
+    current = start
+    while True:
+        if os.path.exists(os.path.join(current, ".git")):
+            return current
+        parent = os.path.dirname(current)
+        if parent == current:
+            return start
+        current = parent
+
+
+def build_session_project_frame(
+    session_key: str,
+    work_dir: str,
+    sandbox_mode: str,
+    hidden_dirs: tuple[str, ...] = (),
+    expose_files: tuple[str, ...] = (),
+    *,
+    stub_session_token: str = "",
+    pid: Optional[int] = None,
+) -> Optional[dict]:
+    """The ``session-project`` frame for one session, or ``None`` when none applies. BLOCKING.
+
+    The daemon keys and confines a per-project backend by it
+    (``daemon.project_scope``). The sandbox fields are the ones the session's
+    own runtime was wrapped with. A session with no sandbox (``off``) or no
+    working directory sends nothing: the daemon refuses an ``off`` plan, and
+    those stubs start their servers in the chat.
+
+    A session with no key yet (a warm-pool session) is named by its
+    *stub_session_token* and runtime *pid* instead, with that pid's start token,
+    so its stubs are served by the project backend before a chat claims it.
+    """
+    if not work_dir or not sandbox_mode or sandbox_mode == "off":
+        return None
+    frame: dict = {
+        "type": "session-project",
+        "root": project_root(work_dir),
+        "sandbox_mode": sandbox_mode,
+        "hidden_dirs": list(hidden_dirs),
+        "expose_files": list(expose_files),
+    }
+    if session_key:
+        frame["session_key"] = session_key
+    elif stub_session_token and isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
+        frame["stub_session_token"] = stub_session_token
+        frame["pid"] = pid
+        frame["pid_start_id"] = platform_compat.get_process_start_id(pid)
+    else:
+        return None
+    return frame
+
+
+async def _send_session_project_inner(socket_path: str, frame: dict) -> bool:
+    reader, writer = await transport.connect(socket_path)
+    try:
+        writer.write(json.dumps(frame).encode("utf-8") + b"\n")
+        await writer.drain()
+        raw = await reader.readline()
+        resp = json.loads(raw.decode("utf-8")) if raw else {}
+        if isinstance(resp, dict) and resp.get("type") == "session-project-set":
+            return True
+        logger.warning(
+            "session-project not recorded for session_key=%s: %r",
+            frame.get("session_key") or "(warm session)",
+            resp,
+        )
+        return False
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+
+
+async def send_session_project(socket_path: str, frame: dict) -> bool:
+    """Send one ``session-project`` frame to gatewayd. True when recorded.
+
+    Best-effort under the claim's time budget: a refusal, a missing socket or a
+    timeout logs and returns False, and that session's per-project stubs start
+    their servers in the chat instead.
+    """
+    try:
+        return await asyncio.wait_for(
+            _send_session_project_inner(socket_path, frame), timeout=_CLAIM_TIMEOUT_SECS
+        )
+    except (OSError, asyncio.TimeoutError, ValueError) as exc:
+        logger.warning(
+            "session-project send failed (per-project stubs run in the chat): "
+            "session_key=%s: %s",
+            frame.get("session_key") or "(warm session)",
+            exc,
         )
         return False
 

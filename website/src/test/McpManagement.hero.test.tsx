@@ -491,7 +491,7 @@ describe('the Review dialog', () => {
     fireEvent.click(box)
     fireEvent.click(within(search).getByRole('button', { name: M('approve_button') }))
     await waitFor(
-      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, undefined, true),
+      () => expect(setStub).toHaveBeenCalledWith('search-mcp', true, 'search-shown', false, true),
       { timeout: 5000 },
     )
     fireEvent.click(within(block(dialog, 'tickets-mcp')).getByRole('button', { name: M('approve_button') }))

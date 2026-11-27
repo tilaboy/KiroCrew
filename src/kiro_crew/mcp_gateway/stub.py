@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING, NoReturn, Optional
 
 from kiro_crew import _facade_mirror
 from kiro_crew.executors import configure_default_executor, subprocess_executor
-from kiro_crew.mcp_gateway.hashing import expand_stub_flags, format_pool_label
+from kiro_crew.mcp_gateway.hashing import (
+    PROJECT_SCOPED_FLAG,
+    expand_stub_flags,
+    format_pool_label,
+)
 from kiro_crew.mcp_gateway.stub_bridge import (
     StubSession,
     _emit_error_frames,
@@ -134,15 +138,15 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default="",
         dest="env_json",
         help="JSON-encoded env pairs. Preferred over --env because values may "
-             "contain ',' or '=' which CSV silently truncates.",
+        "contain ',' or '=' which CSV silently truncates.",
     )
     p.add_argument(
         "--env-file",
         default="",
         dest="env_file",
         help="Path to a 0600 JSON file of env pairs. Preferred over "
-             "--env-json so secrets never appear on argv "
-             "(/proc/<pid>/cmdline).",
+        "--env-json so secrets never appear on argv "
+        "(/proc/<pid>/cmdline).",
     )
     p.add_argument("--auto-approve", default="", dest="auto_approve")
     p.add_argument("--approval-mode", default="interactive", dest="approval_mode")
@@ -157,6 +161,16 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "connection its own backend -- the same process topology as no "
             "gateway at all, which is why absent is the safe default: a stub "
             "from an overlay predating this flag never silently starts sharing."
+        ),
+    )
+    p.add_argument(
+        PROJECT_SCOPED_FLAG,
+        action="store_true",
+        dest="project_scoped",
+        help=(
+            "Ask for one backend per project, started inside this session's own "
+            "sandbox (daemon.project_scope). When the gateway cannot give one, "
+            "the stub starts the server itself in this chat."
         ),
     )
     p.add_argument(
@@ -193,7 +207,9 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--socket",
-        default=os.environ.get("KIROCREW_MCP_SOCKET") or os.environ.get("MC_MCP_SOCKET") or _default_socket_path(),
+        default=os.environ.get("KIROCREW_MCP_SOCKET")
+        or os.environ.get("MC_MCP_SOCKET")
+        or _default_socket_path(),
     )
     p.add_argument("--real-stub", default=None, dest="real_stub")
     # The read ceiling, pre-resolved from config by the rewriter that wrote this
@@ -232,9 +248,7 @@ for _owner in _STUB_OWNERS:
     _importlib.import_module(_owner)
 #: Name this module serves but does not bind -> the owner that answers a read of it.
 _EXPORTS: dict[str, str] = {}
-_EXPORTS.update(
-    _facade_mirror.install(_sys.modules[__name__], _STUB_OWNERS, excluded=()).served
-)
+_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _STUB_OWNERS, excluded=()).served)
 # The forwarding is live from here for every caller. The definitions below bind
 # their names on this module directly, and a write through it of a name it binds
 # itself stays here (``_facade_mirror._creation_owners``).
@@ -358,9 +372,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 
-def _install_signal_handlers(
-    loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event
-) -> None:
+def _install_signal_handlers(loop: asyncio.AbstractEventLoop, stop_event: asyncio.Event) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
             loop.add_signal_handler(sig, stop_event.set)
@@ -429,9 +441,7 @@ async def _recaller_loop(
         # dedicated subprocess pool (not the shared default) so a slow or
         # wedged filesystem read here can neither freeze the stdin-pump bridge
         # that shares this event loop nor starve unrelated default-pool work.
-        caller = await loop.run_in_executor(
-            subprocess_executor(), _build_caller_block, channel_id
-        )
+        caller = await loop.run_in_executor(subprocess_executor(), _build_caller_block, channel_id)
         if not caller["session_key"]:
             continue
         frame = {
@@ -591,7 +601,10 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             # full -- a full daemon says so with a ``capacity`` rejection.
             await _safe_close(writer)
             await alog_fallback(
-                f"ensure_backend_io:{outcome}", payload["stub_uuid"], pool_label, args,
+                f"ensure_backend_io:{outcome}",
+                payload["stub_uuid"],
+                pool_label,
+                args,
             )
             logger.warning("ensure_backend %s; falling back pool=%s", outcome, pool_label)
             fallback_exec(args)
@@ -610,12 +623,18 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
                 retry_after = ready.get("retry_after_secs")
                 await _safe_close(writer)
                 await alog_fallback(
-                    f"capacity:{reason}", payload["stub_uuid"], pool_label, args, terminal=True,
+                    f"capacity:{reason}",
+                    payload["stub_uuid"],
+                    pool_label,
+                    args,
+                    terminal=True,
                 )
                 logger.warning(
                     "gateway refused ensure_backend for capacity (%s, retry_after=%s); "
                     "answering requests with a typed error pool=%s",
-                    reason, retry_after, pool_label,
+                    reason,
+                    retry_after,
+                    pool_label,
                 )
                 refusal_session = StubSession()
                 return await _serve_capacity_refusal(
@@ -656,12 +675,15 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
                 await _safe_close(writer)
                 await alog_fallback(
                     f"terminal:{reason}",
-                    payload["stub_uuid"], pool_label, args,
+                    payload["stub_uuid"],
+                    pool_label,
+                    args,
                     terminal=True,
                 )
                 logger.error(
                     "gateway terminally rejected ensure_backend (%s); not falling back pool=%s",
-                    reason, pool_label,
+                    reason,
+                    pool_label,
                 )
                 return 1
             # Fallback-eligible rejection (``compat`` / ``isolation``, or a
@@ -676,7 +698,9 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             await alog_fallback(reason, payload["stub_uuid"], pool_label, args)
             logger.warning(
                 "gateway fallback-rejected ensure_backend (%s, class=%s); falling back pool=%s",
-                reason, cls or "legacy", pool_label,
+                reason,
+                cls or "legacy",
+                pool_label,
             )
             fallback_exec(args)
             return 1  # unreachable
@@ -685,9 +709,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     # captured handshake and the ending reason all live here precisely because a
     # connection dies with the daemon and the stub does not.
     session = StubSession()
-    peer_supports_ping = bool(
-        isinstance(capabilities, list) and "bridge_ping" in capabilities
-    )
+    peer_supports_ping = bool(isinstance(capabilities, list) and "bridge_ping" in capabilities)
     while True:
         # Warm-pool caller repair: if we registered without a session key (the
         # kiro-cli was pool-spawned before its session was claimed), watch for
@@ -701,9 +723,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         recaller_task: Optional[asyncio.Task[None]] = None
         if not payload.get("session_key") and not payload.get("stub_session_token"):
             recaller_task = asyncio.create_task(
-                _recaller_loop(
-                    writer, _resolve_channel_id(args.channel_id), stop_event
-                ),
+                _recaller_loop(writer, _resolve_channel_id(args.channel_id), stop_event),
                 name="kirocrew-mcp-stub-recaller",
             )
         try:
@@ -757,13 +777,10 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         _to_fail, deferred_init_id = _split_abandoned_ids(session)
         await _emit_error_frames(
             _to_fail,
-            "Gateway restarted; this call was failed so it would not hang. "
-            "Retry it.",
+            "Gateway restarted; this call was failed so it would not hang. " "Retry it.",
             pool_label=pool_label,
         )
-        session.outstanding_ids = (
-            [] if deferred_init_id is None else [deferred_init_id]
-        )
+        session.outstanding_ids = [] if deferred_init_id is None else [deferred_init_id]
 
         if session.has_live_subscriptions():
             # Recovering the transport for a subscribed session would hand it
@@ -807,9 +824,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
                 subprocess_executor(), build_register_payload, args
             )
         except Exception as exc:  # noqa: BLE001 — never lose the reconnect to this
-            logger.warning(
-                "stub reconnect: keeping the previous register payload (%s)", exc
-            )
+            logger.warning("stub reconnect: keeping the previous register payload (%s)", exc)
 
         await alog_fallback(f"bridge_lost_{session.reason}", stub_uuid, pool_label, args)
         attached = await _reconnect_while_draining(
@@ -833,9 +848,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         # live: the reconnect loop mints one per ATTEMPT, so the payload this
         # frame holds is not necessarily the one that registered.
         capabilities = registered.get("capabilities")
-        peer_supports_ping = bool(
-            isinstance(capabilities, list) and "bridge_ping" in capabilities
-        )
+        peer_supports_ping = bool(isinstance(capabilities, list) and "bridge_ping" in capabilities)
 
     # Terminal: the bridge ended for a reason no reconnect can address, or the
     # reconnect budget ran out.
@@ -870,12 +883,9 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
             "restore these tools.",
             pool_label=pool_label,
         )
-        await alog_fallback(
-            f"bridge_dead_{session.reason}", stub_uuid, pool_label, args
-        )
+        await alog_fallback(f"bridge_dead_{session.reason}", stub_uuid, pool_label, args)
         logger.warning(
-            "bridge ended (%s) with %d outstanding call(s) after %d reconnect(s) "
-            "pool=%s",
+            "bridge ended (%s) with %d outstanding call(s) after %d reconnect(s) " "pool=%s",
             session.reason,
             len(_abandoned),
             session.reconnects,
@@ -888,9 +898,7 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         # record that leaves no trace at all. Record it so a degraded session is
         # explicable afterwards instead of looking like a healthy one whose
         # tools fail.
-        await alog_fallback(
-            f"bridge_dead_{session.reason}", stub_uuid, pool_label, args
-        )
+        await alog_fallback(f"bridge_dead_{session.reason}", stub_uuid, pool_label, args)
         logger.warning(
             "bridge ended (%s) and could not re-attach after %d reconnect(s); "
             "this session loses these servers pool=%s",

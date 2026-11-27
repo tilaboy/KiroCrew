@@ -261,13 +261,12 @@ class TestMcpSharingCanTurnOn:
         host["rows"]["kirocrew-core"] = self._row()
         assert host["check"]() is True
 
-    def test_a_server_answered_not_used_is_eligible(self, host) -> None:
+    def test_an_unanswered_server_is_eligible(self, host) -> None:
+        """It shares per project once sharing is on, with nothing to answer."""
         host["rows"]["github"] = self._row()
-        host["cwd_use"]["github"] = "not_used"
         assert host["check"]() is True
 
     def test_no_eligible_server_means_it_cannot_turn_on(self, host) -> None:
-        host["rows"]["unanswered"] = self._row()
         host["rows"]["remote"] = self._row("http")
         host["rows"]["creds-agent"] = self._row()
         host["rows"]["kirocrew-cron"] = self._row()

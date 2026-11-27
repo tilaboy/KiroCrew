@@ -26,7 +26,6 @@ import {
   type LaunchRefusal,
   launchIsApprovable,
   type McpRowState,
-  offersRootsAnswer,
 } from './mcpManagementModel'
 import {
   type DrawnLaunch,
@@ -260,12 +259,9 @@ export function ServerDetailsBody({
 }) {
   return (
     <div className="min-w-0 space-y-2 rounded-lg bg-[var(--hover)] px-3 py-2 text-[12px] leading-relaxed text-[var(--muted)]">
-      {/* A roots row that offers its answer already says why on the row. */}
-      {!offersRootsAnswer(server) && (
-        <p id={detailsWhyId(server.name)} className="m-0 break-words text-[12.5px] [overflow-wrap:anywhere]">
-          {i18nT(detailsWhyKey(server, state, refusal))}
-        </p>
-      )}
+      <p id={detailsWhyId(server.name)} className="m-0 break-words text-[12.5px] [overflow-wrap:anywhere]">
+        {i18nT(detailsWhyKey(server, state, refusal))}
+      </p>
       {refusal ? (
         <RefusalLaunch refusal={refusal} />
       ) : server.transport === 'stdio' ? (
@@ -474,6 +470,7 @@ function ShareSwitch({
   labelledBy,
   describedBy,
   onClick,
+  labelKey = 'pages.mcpManagement.share_toggle',
 }: {
   on: boolean
   disabled: boolean
@@ -481,6 +478,8 @@ function ShareSwitch({
   labelledBy: string
   describedBy?: string
   onClick: () => void
+  /** The switch's accessible name; the Share column's own by default. */
+  labelKey?: string
 }) {
   return (
     <button
@@ -494,7 +493,7 @@ function ShareSwitch({
       className="inline-flex shrink-0 items-center rounded-full p-1 transition-colors hover:bg-[var(--hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
     >
       <span id={labelId} className="sr-only">
-        {i18nT('pages.mcpManagement.share_toggle')}
+        {i18nT(labelKey)}
       </span>
       <span
         aria-hidden="true"
@@ -512,6 +511,43 @@ function ShareSwitch({
         />
       </span>
     </button>
+  )
+}
+
+/**
+ * A per-project row's one control: "Don't share", off by default. On keeps the
+ * server one per chat; off shares it by the chats of one project. It approves
+ * nothing, so it never asks. The label is drawn, since in the Share column an
+ * unlabelled "on" would read as shared.
+ */
+export function DontShareSwitch({
+  server,
+  busy,
+  describedBy,
+  onChange,
+}: {
+  server: McpManagedServer
+  busy: boolean
+  describedBy?: string
+  onChange: (dontShare: boolean) => void
+}) {
+  const labelId = `mcp-dont-share-label-${server.name}`
+  const on = server.declined === true
+  return (
+    <div className="flex min-w-0 items-center justify-end gap-1">
+      <span aria-hidden="true" className="text-[12.5px] text-[var(--muted)]">
+        {i18nT('pages.mcpManagement.dont_share')}
+      </span>
+      <ShareSwitch
+        on={on}
+        disabled={busy}
+        labelId={labelId}
+        labelledBy={`${labelId} ${serverNameId(server.name)}`}
+        describedBy={describedBy}
+        onClick={() => onChange(!on)}
+        labelKey="pages.mcpManagement.dont_share"
+      />
+    </div>
   )
 }
 

@@ -140,11 +140,6 @@ export function withCurrentLaunch(
   return { ...rest, commands, envs, complete, expected_launch }
 }
 
-/** Whether a write was refused until the page shows the launch it would approve. */
-export function asksForLaunch(error: unknown): boolean {
-  return errorCode(error) === 'expected_launch_required'
-}
-
 export function stubErrorKey(error: unknown): string {
   const code = errorCode(error)
   if (code === 'launch_changed_since_display') return 'pages.mcpManagement.stub_error_launch_changed'
@@ -162,10 +157,10 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_unresolved') return 'pages.mcpManagement.stub_error_launch_unresolved'
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
-  if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
+  // A server shared per project never goes on the one copy for all chats.
+  if (code === 'per_project') return 'pages.mcpManagement.stub_error_per_project'
   if (code === 'trust_needs_shared') return 'pages.mcpManagement.stub_error_trust_needs_shared'
   if (code === 'trust_needs_approved_launch') return 'pages.mcpManagement.stub_error_trust_needs_approved_launch'
-  if (code === 'cwd_roots') return 'pages.mcpManagement.stub_error_cwd_roots'
   return 'pages.mcpManagement.stub_failed'
 }
 
@@ -342,13 +337,21 @@ export const REASON_LABEL_KEY: Record<string, string> = {
  * so "is this row shared" is a type check rather than a string compare against a
  * key that lives in 13 catalogs.
  */
-export type McpRowState = 'no_stub' | 'needs_reapproval' | 'direct_env' | 'shared' | 'stub' | 'direct'
+export type McpRowState =
+  | 'no_stub'
+  | 'needs_reapproval'
+  | 'direct_env'
+  | 'shared'
+  | 'project'
+  | 'stub'
+  | 'direct'
 
 const STATE_LABEL_KEY: Record<McpRowState, string> = {
   no_stub: 'pages.mcpManagement.state_no_stub',
   needs_reapproval: 'pages.mcpManagement.state_needs_reapproval',
   direct_env: 'pages.mcpManagement.state_direct_env',
   shared: 'pages.mcpManagement.state_shared',
+  project: 'pages.mcpManagement.state_project',
   stub: 'pages.mcpManagement.state_stub',
   direct: 'pages.mcpManagement.state_direct',
 }
@@ -363,6 +366,9 @@ export function rowState(
   refused?: Record<string, LaunchRefusal>,
 ): McpRowState {
   if (!s.can_stub) return 'no_stub'
+  // One backend per project, read before the Share mark: the gateway routes it
+  // this way whatever the mark says, unless the operator chose "Don't share".
+  if (s.per_project === true) return sharingOn && s.declined !== true ? 'project' : 'direct'
   if (s.stub && refused?.[s.name]) return 'needs_reapproval'
   if (s.stub && s.pooling_blocked_by_env === true) return 'direct_env'
   // A server whose env names a vault secret is wrapped onto a backend of its
@@ -408,7 +414,6 @@ export function detailsWhyKey(
 ): string {
   switch (state) {
     case 'no_stub':
-      if (s.cwd_roots === true) return 'pages.mcpManagement.why_roots'
       return s.denylisted ? 'pages.mcpManagement.why_credentials' : 'pages.mcpManagement.why_no_stdio'
     case 'needs_reapproval':
       if (refusal && !launchIsApprovable(refusal)) return 'pages.mcpManagement.approval_not_approvable_here'
@@ -420,6 +425,8 @@ export function detailsWhyKey(
       return 'pages.mcpManagement.state_direct_env_reason'
     case 'shared':
       return 'pages.mcpManagement.why_shared'
+    case 'project':
+      return 'pages.mcpManagement.why_project'
     case 'stub':
       // A private backend reads `stub` whatever the switch says, so the
       // "waiting for sharing" reason would be wrong for it.
@@ -427,6 +434,9 @@ export function detailsWhyKey(
         ? 'pages.mcpManagement.why_private_backend'
         : 'pages.mcpManagement.why_stub_off'
     case 'direct':
+      if (s.per_project === true) {
+        return s.declined === true ? 'pages.mcpManagement.why_dont_share' : 'pages.mcpManagement.why_project_off'
+      }
       return 'pages.mcpManagement.why_direct'
   }
 }
@@ -435,8 +445,9 @@ export function detailsWhyKey(
  * The servers turning page-wide sharing ON also enables: shareable ones nobody
  * chose for. Never one the operator turned off (`declined`), never one that
  * cannot share (no stdio pipe, a credential vendor, an env a shared copy would
- * withhold), never one already marked, and never one waiting for an approval.
- * The endpoint's own eligibility check still decides each write.
+ * withhold), never one already marked, never one waiting for an approval, and
+ * never one shared per project, which needs no mark. The endpoint's own
+ * eligibility check still decides each write.
  */
 export function autoShareCandidates(
   servers: readonly McpManagedServer[],
@@ -449,30 +460,9 @@ export function autoShareCandidates(
       !s.stub &&
       s.declined !== true &&
       s.pooling_blocked_by_env !== true &&
-      !needsCwdAnswer(s) &&
+      s.per_project !== true &&
       !refused?.[s.name],
   )
-}
-
-/**
- * Whether sharing this server first needs the operator to say it can be shared
- * across chats. A server a declared fact clears (`cwd_proven`: Kiro Crew's own,
- * or one the edition lists) is never asked. A row from a
- * gateway that sends no answer field at all reads as not needing one, since that
- * gateway does not ask.
- */
-export function needsCwdAnswer(s: McpManagedServer): boolean {
-  return s.cwd_proven !== true && s.cwd_use !== undefined && s.cwd_use !== 'not_used'
-}
-
-/**
- * Whether a row kept per chat because the server asked for roots offers the
- * owner's answer that it does not use the folder. That answer (`not_used`)
- * disagrees with roots, so once it is saved the gateway reports the row as
- * shareable again and the offer goes.
- */
-export function offersRootsAnswer(s: McpManagedServer): boolean {
-  return s.cwd_roots === true && s.cwd_use !== 'not_used'
 }
 
 /** Marked servers whose launch waits for the operator's OK, and can get it here. */

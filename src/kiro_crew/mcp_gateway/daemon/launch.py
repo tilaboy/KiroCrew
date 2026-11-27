@@ -40,6 +40,7 @@ from kiro_crew.mcp_gateway.admission import (
 from kiro_crew.mcp_gateway.daemon import logger
 from kiro_crew.mcp_gateway.daemon.control_plane import CONTROL_PLANE_BACKENDS
 from kiro_crew.mcp_gateway.hashing import (
+    PROJECT_TARGET_PREFIX,
     hash_command,
     hash_effective_env,
     hash_launch_env,
@@ -258,9 +259,11 @@ def _declared_env_launch_approved(pool_key: PoolKey, pairs: dict[str, str]) -> b
     """Whether ``pairs`` is the env of an operator-approved launch of this server.
 
     Empty ``pairs`` is approved vacuously: there is nothing to forward, so there
-    is nothing for an approval to authorise.
+    is nothing for an approval to authorise. A per-project key (``sandbox_hash``)
+    needs none either: its backend runs inside the session's own sandbox, where
+    the chat itself would hand the server this env.
     """
-    if not pairs:
+    if not pairs or pool_key.sandbox_hash:
         return True
     if _launch_approved_from_snapshot(
         pool_key.server_name,
@@ -780,8 +783,20 @@ def _backend_work_dir() -> Optional[str]:
 
 
 def _target_spec(pool_key: PoolKey) -> str:
-    """The ``KIROCREW_MCP_TARGET_<SERVER>`` mapping for *pool_key*, or ``""`` when none is set."""
-    base = "KIROCREW_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
+    """The ``KIROCREW_MCP_TARGET_<SERVER>`` mapping for *pool_key*, or ``""`` when none is set.
+
+    A per-project key (``sandbox_hash``) reads only the per-project map
+    (``hashing.PROJECT_TARGET_PREFIX``), and every other key only the approved one.
+    """
+    stem = pool_key.server_name.upper().replace("-", "_")
+    if pool_key.sandbox_hash:
+        project = PROJECT_TARGET_PREFIX + stem
+        return (
+            os.environ.get(project + "__" + pool_key.command_args_hash)
+            or os.environ.get(project)
+            or ""
+        )
+    base = "KIROCREW_MCP_TARGET_" + stem
     # Accept the legacy MC_MCP_TARGET_ prefix for overlays/daemons written by
     # older versions that haven't been regenerated.
     legacy_base = "MC_MCP_TARGET_" + pool_key.server_name.upper().replace("-", "_")
@@ -839,8 +854,11 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     # not proof of what it runs. Spawn only a command+args the operator
     # approved for this name (``launch_approval``). ``None`` is the clean
     # "no target" rejection, so the stub falls back to a launch inside the
-    # session sandbox. Fails closed on a missing or unreadable store.
-    if not _launch_approved_from_snapshot(
+    # session sandbox. Fails closed on a missing or unreadable store. A
+    # per-project key is the one exception: its command comes from the
+    # per-project map, and ``_acquire_backend`` starts it only inside the
+    # sandbox the owner recorded for the session, as the chat itself would.
+    if not pool_key.sandbox_hash and not _launch_approved_from_snapshot(
         pool_key.server_name,
         hash_command(command, args),
         _approval_env_identity(pool_key),
@@ -858,7 +876,11 @@ def env_target_resolver(pool_key: PoolKey) -> Optional[tuple[str, list[str], dic
     work_dir = _backend_work_dir()
     if work_dir is None:
         work_dir = pool_key.work_dir
-    elif os.path.normcase(pool_key.work_dir) != os.path.normcase(work_dir):
+    elif not pool_key.sandbox_hash and os.path.normcase(pool_key.work_dir) != os.path.normcase(
+        work_dir
+    ):
+        # A per-project key's work dir is the daemon's own record, not the
+        # frame's; ``_acquire_backend`` spawns it there, inside its sandbox.
         logger.warning(
             "mcp-gateway: %r registered work dir %r; spawning in %r instead",
             pool_key.server_name,
