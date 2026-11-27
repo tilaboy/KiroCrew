@@ -249,7 +249,6 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   const meaningUnavailable = (records.error as { status?: number } | null)?.status === 409
   const narrowed = !!view.q || view.kind !== 'all' || activeFilterCount(view.filters) > 0 || !!view.range
   const filterCount = activeFilterCount(filtersForKind(view.filters, view.kind))
-  const filterPanel = <FilterPanel bot={botName} view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange} />
 
   // The rows call their handlers through a ref, so they stay memoized across renders.
   const rowActions = useRef<RowActions>({ toggle: picked.toggle, begin: edit.begin, onToggleFilter })
@@ -257,6 +256,55 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
   // The chips show only the ticked values, so a confidence change keeps the same chip object.
   const chipKey = JSON.stringify(Object.entries(view.filters).filter(([key]) => key !== 'conf_min' && key !== 'conf_max'))
   const rowChip = useMemo<ChipFilter | undefined>(() => locked || selecting ? undefined : { filters: Object.fromEntries(JSON.parse(chipKey)), onToggle: (group, value) => rowActions.current.onToggleFilter(group, value) }, [locked, selecting, chipKey])
+  // The toolbar's handlers, read through a ref, so its parts stay memoized
+  // when only the records or counts answer changes.
+  const ui = useRef({ change, setRange, clearSearch, setMode, runTopic, onToggleFilter, onRange, clearFilters, setRailOpen, onSelectingChange, topics, view, meaning, sheet })
+  useLayoutEffect(() => { ui.current = { change, setRange, clearSearch, setMode, runTopic, onToggleFilter, onRange, clearFilters, setRailOpen, onSelectingChange, topics, view, meaning, sheet } })
+  const stable = useMemo(() => ({
+    setRange: (range?: DateRange) => ui.current.setRange(range),
+    clearRange: () => ui.current.setRange(undefined),
+    clearSearch: () => ui.current.clearSearch(),
+    setMode: (mode: SearchMode) => ui.current.setMode(mode),
+    runTopic: (topic: string) => ui.current.runTopic(topic),
+    removeTopic: (topic: string) => ui.current.topics.remove(topic),
+    saveTopic: () => ui.current.topics.save(ui.current.view.q),
+    setKind: (kind: KindTab) => ui.current.change({ kind }),
+    sort: (next: MemoryRecordSort, order: 'asc' | 'desc') => ui.current.change({ sort: next, order, ...(ui.current.meaning && next !== 'match' ? { mode: 'words' as const } : {}) }),
+    toggle: (group: MemoryRecordFacetGroup, value: string) => ui.current.onToggleFilter(group, value),
+    range: (bound: 'conf_min' | 'conf_max', value: number | undefined) => ui.current.onRange(bound, value),
+    clear: () => ui.current.clearFilters(),
+    clearRefs: () => { setJumpFocus(null); ui.current.change({ filters: Object.fromEntries(Object.entries(ui.current.view.filters).filter(([key]) => key !== 'ref')) }) },
+    filters: () => ui.current.sheet ? openSheet.current() : ui.current.setRailOpen(true),
+    select: () => ui.current.onSelectingChange(true),
+  }), [])
+  const shownFilters = useMemo(() => filtersForKind(view.filters, view.kind), [view.filters, view.kind])
+  const searchRow = useMemo(() => <div ref={toolbarRef} className="@container min-w-0"><div className="flex min-w-0 flex-wrap gap-2" data-testid="memory-toolbar">
+      {/* A phone gives the search box its own row; the mode switch, then the filter and sort buttons, wrap below it.
+          Keyed on the phone layout, not on a width class: a 640-767 px phone would
+          otherwise keep every control on one row and squeeze the search box. A wide
+          screen keeps one row until the search box would drop below 22rem (its text
+          beside the mode switch), then wraps the buttons instead of squeezing it. */}
+      {/* A div, not a label: a label would also name the mode switch's buttons. */}
+      <div className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-0 basis-full @[40rem]:min-w-[22rem] @[40rem]:basis-0'}`}>
+        <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
+        <Input className={`min-h-11 w-full pl-9 sm:min-h-10 ${inlineSwitch ? 'pr-[188px]' : 'pr-10'}`} aria-label={t('memoryV2.search')} placeholder={t(view.mode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
+        {/* Clear and the mode switch share one group: the switch sits flush at the box's end, clear 8 px before it. */}
+        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-2">
+          {input && <IconButton aria-label={t('memoryV2.clear_search')} className="flex h-9 w-9 items-center justify-center sm:w-6" onClick={stable.clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
+          {inlineSwitch && <SearchModeSwitch mode={view.mode} onChange={stable.setMode} />}
+        </div>
+      </div>
+      {/* A phone puts the mode switch on its own row under the search box, above the filter and sort buttons. */}
+      {/* So does a toolbar too narrow for the switch inside the box, so it never sits on the text. */}
+      {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={view.mode} onChange={stable.setMode} /></div>}
+      {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
+      {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={stable.filters}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
+      {/* Picking another order leaves the search by meaning, which only ranks by match. */}
+      <DateRangeButton range={view.range} onChange={stable.setRange} />
+      <SortControl view={view} onChange={stable.sort} />
+      {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={stable.select}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
+    </div></div>, [phone, inlineSwitch, view, input, sheet, railOpen, filterCount, stable, t])
+  const topicsRow = useMemo(() => <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={stable.runTopic} onRemove={stable.removeTopic} onSave={stable.saveTopic} />, [topics.topics, view.q, meaning, stable])
   const toolbar = <div className="space-y-3">
     {selecting ? <div className="flex min-h-[52px] flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-border bg-card px-3 py-2" role="toolbar" aria-label={t('memoryPage.selection_toolbar')}>
       {rows.length > 0 && <label className="flex min-h-11 cursor-pointer items-center gap-2 text-[13px]"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_page')} checked={rows.every(isSelected)} disabled={!!all && all.exclude.size >= MANUAL_LIMIT && rows.every(isSelected)} onChange={() => picked.choosePage(rows)} />{t('memoryEditing.select_page')}</label>}
@@ -277,35 +325,10 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       {all && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.all_scope', { query: all.query.q || t('memoryV2.filter_all') })}</p>}
       {!all && selectedCount >= MANUAL_LIMIT && <p role="status" className="basis-full text-[12px] text-muted">{t('memoryEditing.selection_limit')}</p>}
       {total > SELECT_ALL_LIMIT && selectedCount > 0 && <p className="basis-full text-[12px] text-muted">{t('memoryEditing.narrow_selection')}</p>}
-    </div> : <div ref={toolbarRef} className="@container min-w-0"><div className="flex min-w-0 flex-wrap gap-2" data-testid="memory-toolbar">
-      {/* A phone gives the search box its own row; the mode switch, then the filter and sort buttons, wrap below it.
-          Keyed on the phone layout, not on a width class: a 640-767 px phone would
-          otherwise keep every control on one row and squeeze the search box. A wide
-          screen keeps one row until the search box would drop below 22rem (its text
-          beside the mode switch), then wraps the buttons instead of squeezing it. */}
-      {/* A div, not a label: a label would also name the mode switch's buttons. */}
-      <div className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-0 basis-full @[40rem]:min-w-[22rem] @[40rem]:basis-0'}`}>
-        <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
-        <Input className={`min-h-11 w-full pl-9 sm:min-h-10 ${inlineSwitch ? 'pr-[188px]' : 'pr-10'}`} aria-label={t('memoryV2.search')} placeholder={t(view.mode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
-        {/* Clear and the mode switch share one group: the switch sits flush at the box's end, clear 8 px before it. */}
-        <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-2">
-          {input && <IconButton aria-label={t('memoryV2.clear_search')} className="flex h-9 w-9 items-center justify-center sm:w-6" onClick={clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
-          {inlineSwitch && <SearchModeSwitch mode={view.mode} onChange={setMode} />}
-        </div>
-      </div>
-      {/* A phone puts the mode switch on its own row under the search box, above the filter and sort buttons. */}
-      {/* So does a toolbar too narrow for the switch inside the box, so it never sits on the text. */}
-      {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={view.mode} onChange={setMode} /></div>}
-      {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
-      {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={() => sheet ? openSheet.current() : setRailOpen(true)}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
-      {/* Picking another order leaves the search by meaning, which only ranks by match. */}
-      <DateRangeButton range={view.range} onChange={setRange} />
-      <SortControl view={view} onChange={(next: MemoryRecordSort, order) => change({ sort: next, order, ...(meaning && next !== 'match' ? { mode: 'words' as const } : {}) })} />
-      {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={() => onSelectingChange(true)}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
-    </div></div>}
-    {!selecting && <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={runTopic} onRemove={topics.remove} onSave={() => topics.save(view.q)} />}
-    <KindPills bot={botName} wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={(kind: KindTab) => change({ kind })} />
-    <ActiveFilters range={view.range} rangeField={dateField} onClearRange={() => setRange(undefined)} filters={filtersForKind(view.filters, view.kind)} onToggle={onToggleFilter} onRange={onRange} onClear={clearFilters} onClearRefs={() => { setJumpFocus(null); change({ filters: Object.fromEntries(Object.entries(view.filters).filter(([key]) => key !== 'ref')) }) }} />
+    </div> : searchRow}
+    {!selecting && topicsRow}
+    <KindPills bot={botName} wrap={!phone} kind={view.kind} counts={facets?.kind} disabled={locked} onChange={stable.setKind} />
+    <ActiveFilters range={view.range} rangeField={dateField} onClearRange={stable.clearRange} filters={shownFilters} onToggle={stable.toggle} onRange={stable.range} onClear={stable.clear} onClearRefs={stable.clearRefs} />
   </div>
 
   const list = <div className="space-y-3">
@@ -342,13 +365,13 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     {stacked ? <div className="space-y-4">{toolbar}{list}{detailPanel}</div> : <div className="flex gap-6">
       {/* The rail stays in view while the list scrolls, as tall as the window, and scrolls on its own. */}
       {!compact && <FilterRail open={railOpen} width={railWidth} onResize={resizeRail}>
-        <FilterPanel bot={botName} capped view={view} facets={facets} onToggle={onToggleFilter} onRange={onRange}
+        <FilterPanel bot={botName} capped view={view} facets={facets} onToggle={stable.toggle} onRange={stable.range}
           trailing={<IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>} />
       </FilterRail>}
       <div className="min-w-0 flex-1 space-y-4">{toolbar}{list}</div>
       <MemoryDetailSlide contentKey={detail ? detailKey : null}>{detailPanel}</MemoryDetailSlide>
     </div>}
-    {sheet && <FilterSheet openRef={openSheet} phone={phone} canClear={activeFilterCount(view.filters) > 0} onClear={clearFilters}>{filterPanel}</FilterSheet>}
+    {sheet && <FilterSheet openRef={openSheet} phone={phone} canClear={activeFilterCount(view.filters) > 0} onClear={stable.clear}><FilterPanel bot={botName} view={view} facets={facets} onToggle={stable.toggle} onRange={stable.range} /></FilterSheet>}
     {edit.dialog}
   </div>
 }
@@ -418,7 +441,7 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
   const nextBatch = useFrameBudget()
   useEffect(() => {
     if (!building) return
-    const frame = requestAnimationFrame(() => { const add = nextBatch(); setBuild(old => ({ ...old, count: old.count + add })) })
+    const frame = requestAnimationFrame(time => { const add = nextBatch(time); setBuild(old => ({ ...old, count: old.count + add })) })
     return () => cancelAnimationFrame(frame)
   }, [building, build, nextBatch])
   const focused = jumpFocus ? shown.find(row => recordIdentity(row) === jumpFocus) : landingKey ? shown.find(row => row.id === landingKey) : undefined
@@ -439,7 +462,8 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
   const scoreSort = sort === 'confidence' || sort === 'importance'
   const firstUnscored = scoreSort ? shown.findIndex(row => typeof row.importance !== 'number' || (sort === 'confidence') === (row.kind === 'episode')) : -1
   const stale = busy || (building && build.prev.length > 0)
-  return <ul className={`m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0 transition-opacity ${stale ? 'opacity-60' : ''}`} aria-busy={stale || undefined} aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
+  // Contained, so a row mounting or changing restyles and lays out the list alone.
+  return <ul className={`m-0 list-none overflow-hidden rounded-2xl border border-border bg-card p-0 transition-opacity [contain:content] ${stale ? 'opacity-60' : ''}`} aria-busy={stale || undefined} aria-live="polite" aria-label={t('memoryV2.tab_memories')}>
     {/* One flat keyed list: a nested [divider, row] pair would be keyed by its
         place, so every row that moves would remount. */}
     {rows.length > 0 && shown.flatMap((row, index) => [

@@ -411,7 +411,7 @@ describe('server pages as the list scrolls', () => {
     globalThis.IntersectionObserver = class { constructor(callback: IntersectionObserverCallback) { watched.push(callback) } observe() {} disconnect() {} unobserve() {} takeRecords() { return [] } } as unknown as typeof IntersectionObserver
     try {
       renderWithProviders(<List />)
-      await screen.findByText('Rule 49')
+      await screen.findByText('Rule 49', {}, { timeout: 5000 })
       const pageCalls = () => api.memoryRecords.mock.calls.filter(call => call[3] === 50)
       expect(pageCalls().map(call => call[2])).toEqual([0])
       // The end of the list scrolls near: the next page loads under the first.

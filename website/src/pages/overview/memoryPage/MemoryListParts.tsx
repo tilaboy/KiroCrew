@@ -2,7 +2,7 @@
  * The memory list's controls and rows: the kind pills, the sort menu, the
  * filter panel with live counts, the active-filter chips and one record row.
  */
-import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import InfoTip from '../../../components/InfoTip'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, ArrowDownUp, Check, ChevronDown, Folder, History, Mail, MoreHorizontal, Plus, Search, Sparkles, X } from 'lucide-react'
@@ -49,7 +49,7 @@ export const fmtScore = (value: number) => fmtNumber(value, { minimumFractionDig
 const SCORE_KEYS = { confidence: 'memoryPage.confidence_value', importance: 'memoryPage.importance_value', match: 'memoryPage.match_value' } as const
 
 /** The kind pills, one row with live counts; a phone scrolls the row sideways. */
-export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string }) {
+export const KindPills = memo(function KindPills({ kind, counts, onChange, disabled, wrap = false, bot }: { kind: KindTab; counts?: Record<string, number>; onChange: (kind: KindTab) => void; disabled?: boolean; wrap?: boolean; bot?: string }) {
   const { t } = useTranslation()
   const total = counts ? (counts.fact || 0) + (counts.directive || 0) + (counts.episode || 0) : undefined
   // A sideways row fades at each cut edge, so a pill past the edge still shows.
@@ -71,7 +71,7 @@ export function KindPills({ kind, counts, onChange, disabled, wrap = false, bot 
     {!wrap && edges.left && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 -left-1 w-8 bg-gradient-to-r from-bg to-transparent" />}
     {!wrap && edges.right && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 -right-1 w-8 bg-gradient-to-l from-bg to-transparent" />}
   </div>
-}
+})
 
 /** The sort menu with its direction, and a one-press Reverse beside it. */
 export function SortControl({ view, onChange }: { view: ListView; onChange: (sort: MemoryRecordSort, order: 'asc' | 'desc') => void }) {
@@ -173,24 +173,37 @@ export const FIRST_ROWS = 8
 // Rendering time a growing list may take per frame, leaving the rest of the
 // 16.7 ms frame for style, layout and paint.
 const FRAME_BUDGET_MS = 6
+// Whole-frame time a batch may take with its style, layout and paint.
+const FRAME_TOTAL_MS = 12
 
 /** For a list that mounts over several frames: how many items the next frame
  *  may add, from what the last batch cost to render and commit. */
 export function useFrameBudget() {
-  const cost = useRef({ start: 0, added: 0, perItem: 1 })
+  const cost = useRef({ start: 0, added: 0, perItem: 1, floor: 0.05, firstAt: 0, firstAdded: 0, calibrated: false })
   // Timed from this render, not from the frame callback: the render itself can
   // run a task later, after the browser has painted that frame.
   if (cost.current.added && !cost.current.start) cost.current.start = performance.now()
   useLayoutEffect(() => {
     const last = cost.current
     if (!last.added) return
-    if (last.start) last.perItem = Math.max(0.05, (performance.now() - last.start) / last.added)
+    if (last.start) last.perItem = Math.max(last.floor, (performance.now() - last.start) / last.added)
     last.added = 0
     last.start = 0
   })
-  return useCallback(() => {
+  // `frameTime` is the animation-frame timestamp. The first batch is also timed
+  // by the real gap to the next frame, which includes style, layout and paint,
+  // and the per-item cost is raised once to fit that. One check, not a loop.
+  return useCallback((frameTime: number) => {
     const last = cost.current
+    if (last.firstAt && !last.calibrated) {
+      last.calibrated = true
+      // The whole gap, frame baseline included, so a busy device mounts less; at least two items a frame.
+      const perFrameItem = (frameTime - last.firstAt) / last.firstAdded
+      last.floor = Math.min(FRAME_BUDGET_MS / 2, Math.max(0.05, perFrameItem * FRAME_BUDGET_MS / FRAME_TOTAL_MS))
+      last.perItem = Math.max(last.perItem, last.floor)
+    }
     const add = Math.max(1, Math.floor(FRAME_BUDGET_MS / last.perItem))
+    if (!last.firstAt) { last.firstAt = frameTime; last.firstAdded = add }
     last.added = add
     return add
   }, [])
@@ -227,13 +240,16 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
   // further down a frame budget at a time, so opening it never lays out every value at once.
   const [budget, setBudget] = useState(capped ? Infinity : FIRST_ROWS)
   const nextBatch = useFrameBudget()
-  const groups = FACET_GROUPS.filter(group => view.kind === 'all' || GROUP_KINDS[group].includes(view.kind))
   // New counts render at transition priority, between frames: most values'
   // counts change on every filter change, and the ticks must not wait for them.
   const counted = useDeferredValue(facets)
   const low = view.filters.conf_min ?? 0
   const high = view.filters.conf_max ?? 1
-  const shown = groups.map(group => {
+  // Sorting every group's values is the panel's main cost; each frame that
+  // mounts more rows reuses it.
+  const { kind, filters } = view
+  const shown = useMemo(() => FACET_GROUPS.filter(group => kind === 'all' || GROUP_KINDS[group].includes(kind)).map(group => {
+    const view = { filters }
     const counts = counted?.[group] || {}
     const ticked = view.filters[group] || []
     // A ticked value stays listed even when the other filters leave it no rows.
@@ -241,16 +257,17 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
       .filter(value => !needle || facetLabel(group, value).toLocaleLowerCase().includes(needle))
       .sort((a, b) => Number(ticked.includes(b)) - Number(ticked.includes(a)) || (counts[b] || 0) - (counts[a] || 0) || compareText(a, b))
     return { group, counts, ticked, values }
-  }).filter(item => item.values.length)
+  }).filter(item => item.values.length), [counted, kind, filters, needle])
   const rowCount = shown.reduce((sum, item) => sum + item.values.length, 0)
   useEffect(() => {
     if (budget >= rowCount) return
-    const frame = requestAnimationFrame(() => { const add = nextBatch(); setBudget(old => old + add) })
+    const frame = requestAnimationFrame(time => { const add = nextBatch(time); setBudget(old => old + add) })
     return () => cancelAnimationFrame(frame)
   }, [budget, rowCount, nextBatch])
   let left = budget
   const mounted = shown.map(item => { const values = item.values.slice(0, Math.max(0, left)); left -= values.length; return { ...item, values } }).filter(item => item.values.length)
-  return <div className="space-y-5">
+  // Layout and style contained: rows mounting into the panel do not restyle the page around it.
+  return <div className="space-y-5 [contain:layout_style]">
     <div className="flex items-center">
       <div className="relative min-w-0 flex-1">
         <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
@@ -279,7 +296,7 @@ export function FilterPanel({ view, facets, trailing, capped = false, bot, onTog
 }
 
 /** One removable chip per ticked filter value, and Clear all. */
-export function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
+export const ActiveFilters = memo(function ActiveFilters({ filters, range, rangeField, onClearRange, onToggle, onRange, onClear, onClearRefs }: { filters: MemoryRecordFilters; onClearRefs?: () => void; onToggle: (group: MemoryRecordFacetGroup, value: string) => void; onRange: (bound: 'conf_min' | 'conf_max', value: undefined) => void; onClear: () => void
   /** The date range, and the time it filters on. */
   range?: DateRange; rangeField?: 'updated' | 'created'; onClearRange?: () => void }) {
   const { t } = useTranslation()
@@ -295,7 +312,7 @@ export function ActiveFilters({ filters, range, rangeField, onClearRange, onTogg
     </button>)}
     <Btn className="min-h-11 border-transparent sm:min-h-8" onClick={onClear}>{t('memoryPage.clear_all')}</Btn>
   </div>
-}
+})
 
 export function ScoreChip({ value, label }: { value: number; label: 'confidence' | 'importance' | 'match' }) {
   const { t } = useTranslation()
@@ -379,7 +396,7 @@ export const RecordRow = memo(function RecordRow({ row, sort, meaning = false, s
   // 1 px border), so the saved and open tints follow the rounded corners. An
   // off-screen row is neither laid out nor painted (`content-visibility`), so a
   // list scrolled thousands of rows deep stays as quick as its first page.
-  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr)${phone ? '' : ' auto'}` }}>
+  return <li ref={focusRef} data-memory-focus={focus || undefined} className={`grid gap-x-4 border-b [contain:layout_style] [contain-intrinsic-size:auto_112px] [content-visibility:auto] border-border px-4 py-3.5 first:rounded-t-[15px] last:rounded-b-[15px] last:border-b-0 ${focus ? ROW_SAVED : open || selected ? ROW_PICKED : ''}`} style={{ gridTemplateColumns: `${selecting ? '20px ' : ''}minmax(0,1fr)${phone ? '' : ' auto'}` }}>
     {selecting && <span className="pt-1"><input type="checkbox" className="h-4 w-4 accent-accent" aria-label={t('memoryEditing.select_record', { text: body })} checked={selected} disabled={selectDisabled} onChange={onSelect} /></span>}
     <div className="min-w-0 space-y-1.5">
         {focus && saved && <p data-testid="memory-just-saved" className="flex items-center gap-1 text-[12px] font-medium text-ok-text"><Check className="lucide-inline" aria-hidden="true" />{t('memoryPage.just_saved')}</p>}
