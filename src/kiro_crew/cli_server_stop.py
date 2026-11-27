@@ -40,6 +40,11 @@ from kiro_crew.service import controller as service_controller
 
 _SHUTDOWN_RESPONSE_MAX_BYTES = 4096
 
+#: Bound on the Windows ``taskkill /T`` that stops the gateway's tree. The walk
+#: is slow on a big tree (11.9 s for about 1,500 processes), and at the shared
+#: 5 s default the timed-out pid, still alive, was reported as "No permission".
+_STOP_TREE_TIMEOUT_SECS = 120.0
+
 
 def _request_gateway_shutdown(port: int) -> bool:
     """Request graceful shutdown through the gateway's self-authenticating API.
@@ -753,7 +758,9 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             # ProcessLookupError / PermissionError / OSError on non-zero
             # taskkill exit — same shape POSIX uses.
             try:
-                platform_compat.kill_process_tree(pid, platform_compat.SIGTERM)
+                platform_compat.kill_process_tree(
+                    pid, platform_compat.SIGTERM, timeout=_STOP_TREE_TIMEOUT_SECS
+                )
                 sent.add(pid)
             except ProcessLookupError:
                 pass  # already gone
