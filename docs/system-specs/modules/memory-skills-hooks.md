@@ -2210,8 +2210,51 @@ an empty result, and Refresh reads the overview, the nodes in view and the searc
 again. The detail panel's shared refresh after an edit, forget, restore or proposal
 resolution uses that same reload: it clears cached nodes and pending selections,
 drops old replies and refetches the visible tiles even when the layout revision
-has not changed. Search runs on the server (up to 50,000 matches), the canvas dims what does not
-match and the camera fits the matches. The canvas is
+has not changed. Search runs on the server (up to 50,000 matches, brightest first): it finds
+what the Memories list finds by words AND by meaning (`memory_edit.matching_scores`;
+a word match scores 1, a meaning match its cosine from recall's own floor, 0.55
+(`episodic_search._EPISODIC_RELEVANCE_THRESHOLD`), not the list's 0.45
+`MEANING_CUTOFF`, which on the shipped model admitted 65–82% of a 3,600-memory
+synthetic store for five test queries against 10–19% at 0.55; a store
+that cannot embed searches by words and the reply says `meaning: false`). The
+canvas lights the
+set (`memoryGraph/graphLight.ts`): each hit glows by its score relative to the
+set's own range (opacity 0.7 to 1, drawn 1.5 to 2.2 times its size), every other mark dims to
+0.1 opacity and turns 80% grey, links between two hits grow 3× stronger and the
+rest dim, only the topics holding hits keep their names, each with its hit count
+(`topic · 12`), a chip says how many are lit (`12 found`), and the
+camera fits the lit set. Lighting, changing and clearing (the search box is a
+search field: its clear button and Escape empty it) fade over the same 250 ms
+ease-out as a camera move, and jump straight to the end under reduced motion.
+The graph also shows memory reads as they happen. `GET /api/memory/recall` (the
+agent's `memory_recall`, the page's Test recall) and a session's first prompt send
+a `memory_activity` frame (`memory_graph_activity.announce`) to owner sockets only
+(`broadcast_ws_owners`, and only while one is open): the store, the kind
+(`recall` or `session_start`), at most 64 memory ids through the graph's own id
+redaction, and the time, never memory text. The tab of that store
+(`memoryGraph/graphActivityRunner.ts`) lights at most 20 hits a second, coalesced.
+A session start's memories flash once. A recalled memory spreads by the link level
+of the view (`memoryGraph/graphActivity.ts`): at `topics` a wave runs out from it
+through its own topic's disc and reaches the far edge in 680 ms, crossing into no
+other topic; at `within` the same wave, then a faint pulse (strength 0.25) along
+the topic links to the neighbouring topics, which glow faintly; at `near` it
+travels mark to mark along the drawn links, nearest on screen first, as far as a
+third of the view's short side, dimmer with screen distance (down to 0.35). A mark
+two pulses reach lights once, at the stronger value; everything one recall lit holds
+100 ms and eases back over 620 ms together, so a spread takes 1,460 ms at every
+level. Pulses travel the links' own curves on a 2D canvas over the graph, and a hit
+off screen glows on the view's edge in its direction. Underneath, every mark
+breathes: its brightness moves ±5% over 6 s, in phase by its distance from the
+layout centre, so a slow wave drifts out from the middle of the spiral. The point
+shader does both (`scripts/cosmos-graph-activity.mjs` adds a clock to cosmos.gl's
+point shader at build time and fails the build when its anchors move; a lit mark's
+start, hold and strength ride the image channels, which this graph never draws):
+a lit mark grows up to 1.7× and moves 35% toward white on a dark theme, 30% toward
+black on a light one. The breathing redraws at 20 frames a second and a spread every
+frame, through cosmos.gl's own frame loop; when a frame comes late after a draw, the
+wait between draws doubles (up to 1 s) and shrinks again while frames come on time,
+so a slow GPU draws them less often and the page keeps its frame rate. Both stop
+under reduced motion and while the tab is hidden, and a read then is dropped. The canvas is
 cosmos.gl (WebGL, loaded on first visit in its own bundle chunk); when the chunk
 fails to load or WebGL cannot start, an error inside the canvas says so and search
 and filters stay usable. Each kind pill carries a dot in the colour its nodes are
@@ -4190,7 +4233,7 @@ before reading transcript bodies, opening learned memory or billing a model.
 | GET | `/api/memory/graph` | Memory as nodes and edges for the graph view: preferences, projects, recent history, at most 200 semantic rows (first by key, lessons excluded, read on the key index) and the 200 newest lessons; `partial` (`{"semantic": bool, "lessons": bool}`) says which capped population left rows out | (no longer read by the dashboard)
 | GET | `/api/memory/graph/overview` | The store's laid-out clusters (centre, radius, count, topic label) and the layout's bounds and counts, or `{"status": "building"}` |
 | GET | `/api/memory/graph/nodes` | The nodes whose layout point lies in `bbox` (`x0,y0,x1,y1`), optional repeated `kind`, paged by `cursor` with `limit` up to 2,000; each carries `ref`, `record` and `weight` (recall's weight, `episodic_search.recall_weight`) |
-| GET | `/api/memory/graph/search` | Laid-out points matching `q` by words, or by meaning with `mode=meaning`; optional `kind`; at most 50,000 matches plus the `total` |
+| GET | `/api/memory/graph/search` | Laid-out points matching `q` by words and by meaning (`meaning` says whether meaning ran), or with `mode=recall` (a 1–2,000-character `q`) what the store's recall returns; optional `kind`; each match carries `x`, `y`, `cluster` and `score`, brightest first; at most 50,000 matches plus the `total` |
 | GET | `/api/memory/graph/select` | How many nodes lie in `bbox` for the optional `kind`s, the count behind "N selected" |
 | GET/PUT | `/api/memory/settings` | Consolidation settings; see the memory settings card above |
 | GET | `/api/memory/carve` | Filter or count one crew store by carve facet. Query: the five facet names, `kind`, `count_by`, `limit`, `offset`, plus the shared `?store=`. Absent, it reads the global store; present, it is owner-gated like every other store-scoped route. 409 `facets_unsupported` on the v1 lineage, 400 `unknown_facet`, 400 `invalid_pagination`, 503 `store_unavailable`. Every answer echoes the `store` it read. See [Who reads a facet](#who-reads-a-facet) |

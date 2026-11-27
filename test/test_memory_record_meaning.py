@@ -6,6 +6,7 @@ import pytest
 from test_memory_edit import store  # noqa: F401  (the v1 / v2 store fixture)
 
 from kiro_crew import memory_edit, memory_record_meaning
+from kiro_crew.vector_memory_runtime import episodic_search
 
 
 def _embed(text: str) -> list[float]:
@@ -76,3 +77,38 @@ def test_embeds_the_search_words_as_a_recall_query(store, monkeypatch):  # noqa:
     monkeypatch.setattr(store, "_try_embed", embed)
     memory_record_meaning.embed_query(store, "worktree habits")
     assert seen == [True]
+
+
+def test_graph_search_lights_word_matches_fully_and_meaning_matches_by_cosine(store):  # noqa: F811
+    _seed(store)
+    lit, meaning = memory_edit.matching_scores(store, {"q": "worktree"})
+    assert meaning is True
+    # The lesson holds the word; the experience matches by meaning only.
+    assert lit["lesson.a"] == 1.0
+    episode = next(i for i in lit if i not in ("lesson.a",))
+    assert set(lit) == {"lesson.a", episode}
+    assert lit[episode] >= episodic_search._EPISODIC_RELEVANCE_THRESHOLD
+
+
+def test_graph_search_lights_by_meaning_only_from_the_recall_floor(
+    store, monkeypatch  # noqa: F811
+):
+    _seed(store)
+    # Cosine 0.71 to "worktree": one shared axis of two, and not the word itself.
+    assert store.set_semantic("user.mixed", "Chinese checkout notes", 0.8, "user_explicit") is None
+    store.backfill_missing_embeddings(pace=False)
+    assert "user.mixed" in memory_edit.matching_scores(store, {"q": "worktree"})[0]
+    monkeypatch.setattr(episodic_search, "_EPISODIC_RELEVANCE_THRESHOLD", 0.75)
+    lit, _ = memory_edit.matching_scores(store, {"q": "worktree"})
+    assert "user.mixed" not in lit and "lesson.a" in lit
+    # Neither fact is near "worktree", nor holds the word.
+    assert "user.language" not in lit and "project.flaky" not in lit
+
+
+def test_graph_search_finds_by_words_alone_without_an_embedding_model(store):  # noqa: F811
+    _seed(store)
+    store.embed_fn = None
+    store.embed_fn_factory = None
+    lit, meaning = memory_edit.matching_scores(store, {"q": "shard"})
+    assert meaning is False
+    assert lit == {"project.flaky": 1.0}

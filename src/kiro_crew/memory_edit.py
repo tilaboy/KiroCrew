@@ -530,44 +530,53 @@ def _cached_summaries(store: Any, base: dict) -> list[dict]:
     return everything
 
 
-def matching_ids(store: Any, query: dict, *, meaning: bool = False) -> list[str]:
-    """The id of every record the list shows for *query*, across all its pages.
+def matching_scores(store: Any, query: dict) -> tuple[dict[str, float], bool]:
+    """How strongly the memory graph lights each record for *query*'s words.
 
-    The memory graph's search: the same words, meaning cut-off and filters as
-    :func:`list_records`, so the graph highlights exactly what the list would
-    list. An id here is the graph's id for a record (an experience's id, a
-    fact's or lesson's key).
+    The graph's search finds what the list finds by words AND what is close in
+    meaning, with the same filters as :func:`list_records`. A word match scores 1;
+    a meaning match scores its cosine to the words, from recall's own floor
+    (``episodic_search._EPISODIC_RELEVANCE_THRESHOLD``) to 1, so the graph lights
+    what recall could return rather than the list's looser ``MEANING_CUTOFF``,
+    which on the shipped model admits most of a store. Meaning joins only when the
+    store can embed the words, and the bool says whether it did, so a store with
+    no model still searches by words. An id here is the graph's id for a record
+    (an experience's id, a fact's or lesson's key).
     """
+    from kiro_crew.vector_memory_runtime.episodic_search import (
+        _EPISODIC_RELEVANCE_THRESHOLD as floor,
+    )
+
     query = _query(query)
     if not query["q"]:
         raise MemoryEditError("Search needs search words.")
-    vector = None
-    if meaning:
-        try:
-            vector = memory_record_meaning.embed_query(store, query["q"])
-        except memory_record_meaning.MeaningUnavailable:
-            raise MemoryEditError(
-                "Search by meaning needs the embedding model, which is not ready. Search by words instead.",
-                code="meaning_unavailable",
-                status=409,
-            ) from None
+    try:
+        # Model inference, outside the store lock.
+        vector: list[float] | None = memory_record_meaning.embed_query(store, query["q"])
+    except memory_record_meaning.MeaningUnavailable:
+        vector = None
     filters = _with_box(store, query.get("filters", {}))
+
+    def wanted(summary: dict) -> bool:
+        return (
+            (query["kind"] == "all" or summary["kind"] == query["kind"])
+            and memory_record_facets.matches(summary, filters)
+            and isinstance(summary["id"], str)
+            and bool(summary["id"])
+        )
+
+    out: dict[str, float] = {}
     with store._db_lock, _read_snapshot(store):
-        everything = _cached_summaries(store, {"q": "" if meaning else query["q"], "kind": "all"})
-        scores = memory_record_meaning.score_rows(store, vector) if vector is not None else None
-        out = []
-        for summary in everything:
-            if scores is not None and (
-                memory_record_meaning.summary_score(scores, summary)
-                < memory_record_meaning.MEANING_CUTOFF
-            ):
-                continue
-            if (query["kind"] == "all" or summary["kind"] == query["kind"]) and (
-                memory_record_facets.matches(summary, filters)
-            ):
-                if isinstance(summary["id"], str) and summary["id"]:
-                    out.append(summary["id"])
-    return out
+        if vector is not None:
+            scores = memory_record_meaning.score_rows(store, vector)
+            for summary in _cached_summaries(store, {"q": "", "kind": "all"}):
+                score = memory_record_meaning.summary_score(scores, summary)
+                if score >= floor and wanted(summary):
+                    out[summary["id"]] = score
+        for summary in _cached_summaries(store, {"q": query["q"], "kind": "all"}):
+            if wanted(summary):
+                out[summary["id"]] = 1.0
+    return out, vector is not None
 
 
 def list_records(

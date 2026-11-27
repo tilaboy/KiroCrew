@@ -103,6 +103,10 @@ async def test_search_finds_every_match_none_of_them_loaded(env, name):
     assert body["total"] == 50
     assert {m["id"] for m in body["matches"]} == {f"user.n{i}" for i in range(0, 300, 6)}
     assert all(isinstance(m["x"], float) and isinstance(m["y"], float) for m in body["matches"])
+    # Every match names its cluster, so the page counts hits per topic unloaded.
+    overview = await _get(env, api.api_memory_graph_overview, name)
+    assert {m["cluster"] for m in body["matches"]} <= {c["id"] for c in overview["clusters"]}
+    assert all(m["score"] == 1.0 for m in body["matches"])
 
 
 @pytest.mark.asyncio
