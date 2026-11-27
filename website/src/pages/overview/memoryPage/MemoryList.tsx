@@ -283,6 +283,9 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
     select: () => ui.current.onSelectingChange(true),
   }), [])
   const shownFilters = useMemo(() => filtersForKind(view.filters, view.kind), [view.filters, view.kind])
+  // The search row reads no filter, so a filter or confidence change leaves it as it is.
+  const { q: viewQ, kind: viewKind, sort: viewSort, order: viewOrder, mode: viewMode, range: viewRange } = view
+  const sortView = useMemo<ListView>(() => ({ q: viewQ, kind: viewKind, sort: viewSort, order: viewOrder, mode: viewMode, range: viewRange, filters: {} }), [viewQ, viewKind, viewSort, viewOrder, viewMode, viewRange])
   const searchRow = useMemo(() => <div ref={toolbarRef} className="@container min-w-0"><div className="flex min-w-0 flex-wrap gap-2" data-testid="memory-toolbar">
       {/* A phone gives the search box its own row; the mode switch, then the filter and sort buttons, wrap below it.
           Keyed on the phone layout, not on a width class: a 640-767 px phone would
@@ -292,23 +295,23 @@ export default function MemoryList({ jump, store, botName, privateMemory, focusK
       {/* A div, not a label: a label would also name the mode switch's buttons. */}
       <div className={`relative flex-1 ${phone ? 'min-w-0 basis-full' : 'min-w-0 basis-full @[40rem]:min-w-[22rem] @[40rem]:basis-0'}`}>
         <Search className="lucide-inline pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted" aria-hidden="true" />
-        <Input className={`min-h-11 w-full pl-9 sm:min-h-10 ${inlineSwitch ? 'pr-[188px]' : 'pr-10'}`} aria-label={t('memoryV2.search')} placeholder={t(view.mode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
+        <Input className={`min-h-11 w-full pl-9 sm:min-h-10 ${inlineSwitch ? 'pr-[188px]' : 'pr-10'}`} aria-label={t('memoryV2.search')} placeholder={t(viewMode === 'meaning' ? 'memoryPage.meaning_placeholder' : 'memoryEditing.search_hint')} value={input} onChange={event => setInput(event.target.value)} />
         {/* Clear and the mode switch share one group: the switch sits flush at the box's end, clear 8 px before it. */}
         <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center gap-2">
           {input && <IconButton aria-label={t('memoryV2.clear_search')} className="flex h-9 w-9 items-center justify-center sm:w-6" onClick={stable.clearSearch}><X className="lucide-inline" aria-hidden="true" /></IconButton>}
-          {inlineSwitch && <SearchModeSwitch mode={view.mode} onChange={stable.setMode} />}
+          {inlineSwitch && <SearchModeSwitch mode={viewMode} onChange={stable.setMode} />}
         </div>
       </div>
       {/* A phone puts the mode switch on its own row under the search box, above the filter and sort buttons. */}
       {/* So does a toolbar too narrow for the switch inside the box, so it never sits on the text. */}
-      {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={view.mode} onChange={stable.setMode} /></div>}
+      {!inlineSwitch && <div className="basis-full"><SearchModeSwitch wide={phone} mode={viewMode} onChange={stable.setMode} /></div>}
       {/* A phone opens the filter sheet; a wide screen with the rail hidden shows it again. */}
       {(sheet || !railOpen) && <Btn aria-label={t('memoryPage.filters')} aria-expanded={sheet ? undefined : false} className="relative min-h-11 min-w-11 shrink-0 justify-center sm:min-h-10 sm:min-w-10" onClick={stable.filters}><SlidersHorizontal className="lucide-inline" aria-hidden="true" />{filterCount > 0 && <span className="absolute -right-1.5 -top-1.5 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-accent px-1 text-[11px] text-accent-fg">{fmtNumber(filterCount)}</span>}</Btn>}
       {/* Picking another order leaves the search by meaning, which only ranks by match. */}
-      <DateRangeButton range={view.range} onChange={stable.setRange} />
-      <SortControl view={view} onChange={stable.sort} />
+      <DateRangeButton range={viewRange} onChange={stable.setRange} />
+      <SortControl view={sortView} onChange={stable.sort} />
       {!phone && <Btn className="min-h-10 shrink-0 whitespace-nowrap" onClick={stable.select}><ListChecks className="lucide-inline" />{t('memoryPage.select')}</Btn>}
-    </div></div>, [phone, inlineSwitch, view, input, sheet, railOpen, filterCount, stable, t])
+    </div></div>, [phone, inlineSwitch, viewMode, viewRange, sortView, input, sheet, railOpen, filterCount, stable, t])
   const topicsRow = useMemo(() => <SavedTopics topics={topics.topics} query={view.q} canSave={meaning} onRun={stable.runTopic} onRemove={stable.removeTopic} onSave={stable.saveTopic} />, [topics.topics, view.q, meaning, stable])
   // Built once, so the rail's memoized panel is not re-rendered for a new button element.
   const railHide = useMemo(() => <IconButton aria-label={t('memoryPage.hide_filters')} title={t('memoryPage.hide_filters')} aria-expanded className="pi-morph -mr-2.5 flex h-9 w-9 shrink-0 items-center justify-center text-muted" onClick={() => ui.current.setRailOpen(false)}><PanelLeftLight size={16} aria-hidden="true" /></IconButton>, [t])
@@ -400,7 +403,7 @@ function FilterSheet({ openRef, phone, canClear, onClear, children }: { openRef:
   }, [open])
   if (!open) return null
   // No backdrop blur on a phone: the page behind re-renders while the sheet is open, and each re-render re-blurs it.
-  return <Modal open backdropBlur={!phone} title={t('memoryPage.filters')} onClose={() => setOpen(false)} headerActions={canClear ? <Btn className="min-h-11 border-transparent" onClick={onClear}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{body ? children : <div className="min-h-[60vh]" />}</Modal>
+  return <Modal open backdropBlur={!phone} deferInitialFocus title={t('memoryPage.filters')} onClose={() => setOpen(false)} headerActions={canClear ? <Btn className="min-h-11 border-transparent" onClick={onClear}>{t('memoryPage.clear_all')}</Btn> : undefined} footer={<Btn primary className="min-h-12 w-full justify-center" onClick={() => setOpen(false)}>{t('memoryPage.show_results')}</Btn>}>{body ? children : <div className="min-h-[60vh]" />}</Modal>
 }
 
 type RowActions = { toggle: (row: MemoryRecord) => void; begin: ReturnType<typeof useMemoryRecordEdit>['begin']; onToggleFilter: (group: MemoryRecordFacetGroup, value: string) => void }
@@ -489,10 +492,12 @@ function RecordList({ rows, loading, busy, footer, sort, meaning, kind, selectin
     if (footer) out.push('footer')
     return out
   }, [rows.length, listed, divider, firstUnscored, footer])
+  const rowPlace = useMemo(() => new Map(listed.map((row, index) => [row, index + 1])), [listed])
   const renderItem = (item: ListItem, attrs?: VirtualItemAttrs) => item === 'divider'
     ? <li key="divider" {...attrs} className="flex h-9 items-center border-b border-border bg-bg-hover px-4 text-[12px] text-muted">{t(sort === 'confidence' ? 'memoryPage.divider_no_confidence' : 'memoryPage.divider_no_importance')}</li>
     : item === 'footer' ? (isValidElement(footer) ? cloneElement(footer as ReactElement<VirtualItemAttrs>, { key: 'footer', ...attrs }) : null)
-    : <RecordRow key={recordIdentity(item)} {...attrs} row={item} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(item)} chip={chip}
+    // A windowed list holds only some rows, so each says its place among the loaded rows.
+    : <RecordRow key={recordIdentity(item)} {...attrs} {...(windowed ? { 'aria-setsize': listed.length, 'aria-posinset': rowPlace.get(item) } : {})} row={item} sort={sort} meaning={meaning} selecting={selecting} selected={isSelected(item)} chip={chip}
         selectDisabled={lockedRow(item)}
         open={detailKey === recordIdentity(item)} focus={item === focused} saved={item === focused && !jumpFocus} focusRef={item === focused ? focusRow : undefined}
         onSelect={onSelect} onOpen={onOpenRow} onEdit={onEdit} onForget={onForget} />

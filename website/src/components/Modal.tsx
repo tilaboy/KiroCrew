@@ -73,6 +73,9 @@ interface ModalProps {
    *  page re-renders while it is open on a phone: each re-render re-blurs the
    *  whole backdrop and costs frames. */
   backdropBlur?: boolean
+  /** Move focus into the dialog a frame after it opens (default false), so the
+   *  opening tap paints first. See `useDialogFocusTrap`'s `deferFocus`. */
+  deferInitialFocus?: boolean
   /** Modal content */
   children: React.ReactNode
 }
@@ -90,7 +93,7 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, returnFocusTo, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, returnFocusTo, deferInitialFocus = false, children }: ModalDialogProps) {
   // Asked for, or opened from inside a trust-root region (it portals out of it).
   const trustRoot = useGuideTrustRoot() || trustRootProp
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -106,7 +109,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   // consume it with preventDefault before the outer dialog decides to close.
   // The trap is one facet of interaction: an inert panel (a nested portaled
   // dialog is the active layer) must not pull Tab back into itself either.
-  useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false, enabled: !interactionDisabled, returnFocusTo })
+  useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false, enabled: !interactionDisabled, returnFocusTo, deferFocus: deferInitialFocus })
   useEffect(() => {
     if (dialogRef.current) dialogRef.current.inert = interactionDisabled
   }, [interactionDisabled])

@@ -115,12 +115,14 @@ const FacetTip = memo(InfoTip)
 
 // Memoized: a facet recount re-renders only the rows whose count or tick changed,
 // when the caller passes a stable `onToggle` (FilterPanel does).
-export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hint, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string; onToggle: () => void }) {
+export const FacetCheck = memo(function FacetCheck({ label, count, on, warn, hint, tipReady = true, onToggle }: { label: string; count: number; on: boolean; warn?: boolean; hint?: string
+  /** False on the frames that first mount the row: the (?) keeps its place and mounts after paint. */
+  tipReady?: boolean; onToggle: () => void }) {
   const id = useId()
   return <div data-facet-row className="grid min-h-11 items-center gap-x-2 text-[13px] text-text sm:min-h-8" style={{ gridTemplateColumns: `16px minmax(0,1fr)${hint ? ' auto' : ''} 48px` }}>
     <input id={id} type="checkbox" aria-label={label} className="h-4 w-4 cursor-pointer accent-accent" checked={on} onChange={onToggle} />
     <label htmlFor={id} className={`cursor-pointer break-words py-1 [overflow-wrap:anywhere] ${warn ? 'text-warn-text' : ''}`}>{label}</label>
-    {hint && <FacetTip text={hint} />}
+    {hint && (tipReady ? <FacetTip text={hint} /> : <span className="h-4 w-4" aria-hidden="true" />)}
     <label htmlFor={id} className="cursor-pointer text-right text-[12px] tabular-nums text-muted">{fmtNumber(count)}</label>
   </div>
 })
@@ -270,6 +272,14 @@ export const FilterPanel = memo(function FilterPanel({ view, facets, trailing, c
     return { group, counts, ticked, values }
   }).filter(item => item.values.length), [counted, kind, filters, needle])
   const rowCount = shown.reduce((sum, item) => sum + item.values.length, 0)
+  // The (?) tips mount once every row is in and has painted, not in the frames that lay the rows out.
+  const [tipsReady, setTipsReady] = useState(capped)
+  const allMounted = budget >= rowCount
+  useEffect(() => {
+    if (tipsReady || !allMounted) return
+    const frame = requestAnimationFrame(() => setTipsReady(true))
+    return () => cancelAnimationFrame(frame)
+  }, [tipsReady, allMounted])
   useEffect(() => {
     if (budget >= rowCount) return
     const frame = requestAnimationFrame(time => { const add = nextBatch(time); setBudget(old => old + add) })
@@ -296,21 +306,21 @@ export const FilterPanel = memo(function FilterPanel({ view, facets, trailing, c
       </div>
     </section>}
     {needle && !shown.length && <p role="status" className="text-[13px] text-muted">{t('memoryV2.no_matches')}</p>}
-    <FacetGroups mounted={mounted} kind={kind} capped={capped} bot={bot} handler={handler} />
+    <FacetGroups mounted={mounted} kind={kind} capped={capped} bot={bot} handler={handler} tipsReady={tipsReady} />
   </div>
 })
 
 type MountedGroup = { group: MemoryRecordFacetGroup; counts: Record<string, number>; ticked: string[]; values: string[] }
 
 /** The value groups, apart from the sliders so a confidence change skips them. */
-const FacetGroups = memo(function FacetGroups({ mounted, kind, capped, bot, handler }: { mounted: MountedGroup[]; kind: KindTab; capped: boolean; bot?: string; handler: (group: MemoryRecordFacetGroup, value: string) => () => void }) {
+const FacetGroups = memo(function FacetGroups({ mounted, kind, capped, bot, handler, tipsReady }: { mounted: MountedGroup[]; kind: KindTab; capped: boolean; bot?: string; handler: (group: MemoryRecordFacetGroup, value: string) => () => void; tipsReady: boolean }) {
   const { t } = useTranslation()
   return <>{mounted.map(({ group, counts, ticked, values }) => {
     const heading = kind === 'all' && GROUP_KIND_KEYS[group] ? t(GROUP_KIND_KEYS[group]!, { group: t(GROUP_KEYS[group]) }) : t(GROUP_KEYS[group])
     return <section key={group} aria-label={heading}>
       <PanelSectionHeader label={heading} />
       <GroupScroll capped={capped}>
-        {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={handler(group, value)} />)}
+        {values.map(value => <FacetCheck key={value} label={facetLabel(group, value)} hint={group === 'source' ? sourceTip(value, bot) : undefined} tipReady={tipsReady} count={counts[value] || 0} on={ticked.includes(value)} warn={group === 'scope' && value === SCOPE_UNUSABLE} onToggle={handler(group, value)} />)}
       </GroupScroll>
     </section>
   })}</>
@@ -388,7 +398,7 @@ export function RecordMeta({ row, sort, chip, meaning = false, end }: { row: Mem
 }
 
 /** The attributes a windowed list (react-virtuoso) sets on each item it lays out. */
-export type VirtualItemAttrs = { 'data-index'?: number; 'data-item-index'?: number; 'data-known-size'?: number }
+export type VirtualItemAttrs = { 'data-index'?: number; 'data-item-index'?: number; 'data-known-size'?: number; 'aria-setsize'?: number; 'aria-posinset'?: number }
 
 /** One record in the list: text, chips, key, and its actions menu. Memoized, and
  *  each handler takes the row, so stable handlers let an unchanged row skip a render. */

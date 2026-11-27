@@ -80,6 +80,17 @@ describe('Modal — dialog semantics', () => {
     expect(screen.getByTestId('modal-backdrop')).not.toHaveClass('backdrop-blur-md')
   })
 
+  it('moves focus in on open by default, and a frame later when the dialog defers it', async () => {
+    const plain = renderWithProviders(<Modal open onClose={() => {}} title="Now"><button>Inside now</button></Modal>)
+    const now = await screen.findByRole('dialog')
+    expect(now.contains(document.activeElement)).toBe(true)
+    plain.unmount()
+    renderWithProviders(<Modal open deferInitialFocus onClose={() => {}} title="Later"><button>Inside later</button></Modal>)
+    const later = await screen.findByRole('dialog')
+    // Still lands inside for keyboard and screen-reader users, after the opening frame.
+    await waitFor(() => expect(later.contains(document.activeElement)).toBe(true))
+  })
+
   it('names the dialog from its own title, with no per-call-site opt-in', async () => {
     renderWithProviders(<Harness />)
     await openDialog()
